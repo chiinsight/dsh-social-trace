@@ -1,6 +1,6 @@
 {
   "name": "dsh-social-trace",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Social Trace：微博与雪球增量监控、可视化拓扑、历史缓存与本地检索",
   "type": "module",
   "license": "MIT",

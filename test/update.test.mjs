@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { createUpdates } from '../lib/update.js';
 import { createRuntime } from '../lib/index.js';
+
+const { version: currentVersion } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 function fixture({ version = '0.2.0', spec = '^0.1.0', manager, fetchImpl } = {}) {
   const calls = [];
@@ -20,7 +22,7 @@ test('检查更新不安装，缓存最新版本且只允许用户选择刚检�
   const { updates, calls } = fixture();
   assert.throws(() => updates.start('0.2.0'), /先检查/);
   const view = await updates.check();
-  assert.equal(view.currentVersion, '0.1.0'); assert.equal(view.latestVersion, '0.2.0');
+  assert.equal(view.currentVersion, currentVersion); assert.equal(view.latestVersion, '0.2.0');
   assert.equal(view.updateAvailable, true); assert.equal(view.canApply, true);
   assert.equal('installSpec' in view, false);
   assert.deepEqual(calls, []);
@@ -84,7 +86,7 @@ test('移除后安装抛错会尝试恢复原版，不向界面泄露底层诊�
   await updates.check(); updates.start('0.2.0');
   const result = await updates.settled();
   assert.equal(result.phase, 'failed');
-  assert.equal(calls.at(-1), 'dsh-social-trace@0.1.0');
+  assert.equal(calls.at(-1), 'dsh-social-trace@' + currentVersion);
   assert.doesNotMatch(JSON.stringify(result), /sensitive diagnostic sample/);
 });
 
