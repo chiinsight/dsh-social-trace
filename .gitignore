@@ -1,0 +1,19 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+profiles/
+*.sqlite*
+*.db*
+*.log
+storage-state*.json
+cookies*.json
+dist/
+.DS_Store
+
+*-session.json*
+*-browser/
+
+# 内部过程文档不随仓库发布
+docs/
