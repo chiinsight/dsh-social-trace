@@ -100,7 +100,7 @@ dsh plugin --profile desktop add .
 
 ```sh
 npm ci
-npm test        # 244 项离线测试
+npm test        # 254 项离线测试
 npm run test:ui # 5 项界面测试（需要 Chrome）
 ```
 

@@ -1,8 +1,8 @@
 import { chromium } from 'playwright';
 import { join } from 'node:path';
 import { dataDirectory } from '../lib/paths.js';
-const targetUid = process.env.SOCIAL_TRACE_PROBE_UID || '1195230310';
-if (!/^\d{5,20}$/.test(targetUid)) throw new Error('无效测试 UID');
+const targetUid = process.env.SOCIAL_TRACE_PROBE_UID;
+if (!targetUid || !/^\d{5,20}$/.test(targetUid)) throw new Error('请设置 SOCIAL_TRACE_PROBE_UID（5–20 位数字 UID）');
 
 const context = await chromium.launchPersistentContext(join(dataDirectory(), 'weibo-browser'), {
   channel: 'chrome', headless: false, viewport: { width: 1200, height: 850 },

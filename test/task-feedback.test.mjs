@@ -6,9 +6,9 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 const sandbox = { window: { __ModuleLoader__: { load: registration => registration.factory(() => React) } } };
-const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace('    function AddAuthorDialog', '    globalThis.feedback = { monitorStatus, taskProblem, FrequencyFields };\n    function AddAuthorDialog');
+const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace('    function AddAuthorDialog', '    globalThis.feedback = { monitorStatus, taskProblem, FrequencyFields, NodeSettings };\n    function AddAuthorDialog');
 vm.runInNewContext(code, sandbox);
-const { monitorStatus, taskProblem, FrequencyFields } = sandbox.feedback;
+const { monitorStatus, taskProblem, FrequencyFields, NodeSettings } = sandbox.feedback;
 
 test('历史长文错误指明博主和缓存任务，不误报登录失效', () => {
   const job = { id: 'history', uid: 'one', kind: 'history', status: 'needs_review', message: '长文接口未返回全文，保留断点并暂停' };
@@ -30,4 +30,36 @@ test('频率主文案只说明多久检查，时钟对齐留在辅助说明', ()
   assert.match(html, /每小时检查一次/);
   assert.match(html, /60 分钟为整点/);
   assert.doesNotMatch(html, /每分钟00秒/);
+});
+
+test('账号已登录但检查延迟时不能显示正常，暂停任务不误报延迟', () => {
+  const state = { enabled: true, account: { status: 'ready', cooldown_until: 0 }, targets: [{ uid: 'one', platform: 'weibo', name: '测试' }],
+    jobs: [{ uid: 'one', kind: 'updates', status: 'queued' }],
+    platforms: [{ id: 'weibo', enabled: true, health: { activeAuthors: 15, capacityLimited: false, minimumCycleMs: 45000, delayed: [{ uid: 'one', lateMs: 120000 }] } }] };
+  assert.equal(monitorStatus(state).label, '检查延迟');
+  assert.equal(monitorStatus(state).kind, 'partial');
+  assert.match(monitorStatus(state).reason, /未按设定频率/);
+  state.jobs[0].status = 'paused';
+  assert.equal(monitorStatus(state).kind, 'paused');
+  state.jobs[0].status = 'queued'; state.account.cooldown_until = Date.now() + 60000; state.account.errors = 1;
+  assert.equal(monitorStatus(state).kind, 'cooldown');
+});
+
+test('频率设置能区分接口返回的最新时间、读取失败和正文补全失败', () => {
+  const state = { enabled: true, account: { status: 'ready', cooldown_until: 0 },
+    targets: [{ uid: 'one', platform: 'weibo', name: '测试', interval_ms: 60000 }],
+    jobs: [{ id: 'updates', uid: 'one', kind: 'updates', status: 'queued' }],
+    platforms: [{ id: 'weibo', enabled: true, health: { activeAuthors: 1, capacityLimited: false, delayed: [{ uid: 'one' }] } }],
+    progress: [{ uid: 'one', recentChecks: [
+      { at: 100000, page: 1, status: 'success', count: 20, newestPublishedAt: 90000 },
+      { at: 200000, page: 1, stage: 'timeline', status: 'network' },
+      { at: 300000, page: 1, stage: 'complete', status: 'network' },
+    ], history: {} }] };
+  const html = renderToStaticMarkup(React.createElement(NodeSettings, { context: { scope: 'target', uid: 'one', platform: 'weibo' }, state, embedded: true }));
+  assert.match(html, /未按设定频率及时检查/);
+  assert.match(html, /最近检查记录/);
+  assert.match(html, /返回的最新发布时间/);
+  assert.match(html, /返回 20 条/);
+  assert.match(html, /动态列表读取失败/);
+  assert.match(html, /正文补全失败/);
 });

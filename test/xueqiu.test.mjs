@@ -13,7 +13,7 @@ import { CaptureError } from '../lib/capture-error.js';
 import { WeiboBrowser } from '../lib/platforms/weibo/index.js';
 import { XueqiuBrowser, parseAuthor, decodeResponse, normalizePost } from '../lib/platforms/xueqiu/index.js';
 
-const uid = '8152922548';
+const uid = '1234567890';
 const now = Date.parse('2026-11-05T06:00:00Z');
 const raw = (extra = {}) => ({ id: 415405843, user_id: Number(uid), user: { id: Number(uid), screen_name: '测试博主' },
   created_at: now - 1000, description: '正文<br>第二行 &amp; 内容', text: '正文<br>第二行 &amp; 内容', truncated: false, mark: 0, ...extra });

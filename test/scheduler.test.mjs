@@ -55,6 +55,124 @@ test('新增跨多页时补到上轮边界即止，旧基线无需入库，完�
   assert.equal(h.completed(), 2); assert.equal(h.store.archiveSummary()[0].last_saved_at, saves);
 });
 
+test('日常增量在同页遇到上次最新页边界后结束，不为一条新动态多等一轮翻页', async t => {
+  const pages = [];
+  const h = fixture(t, async (_, page) => { pages.push(page); return { items: [raw('2', at('14:00:30')), raw('1', at('13:59:00'))], end: false }; });
+  h.store.db.prepare('UPDATE targets SET interval_ms=60000 WHERE uid=?').run(uid);
+  h.store.updateJob(h.update.id, { checkpoint: { initialized: true, lastScanAt: at('14:00:00'), boundaryIds: ['1'] }, next_run_at: at('14:01:00') });
+  h.setTime(at('14:01:00'));
+  for (let i = 0; i < 5; i++) await h.worker.tick();
+  assert.deepEqual(pages, [1]);
+  assert.equal(h.store.count(), 1);
+  assert.equal(h.store.job(h.update.id).next_run_at, at('14:02:00'));
+  const record = h.store.targetProgress(h.now())[0].recentChecks[0];
+  assert.equal(record.newestPublishedAt, at('14:00:30'));
+  assert.equal(record.count, 2);
+  assert.equal(record.status, 'success');
+});
+
+test('已缓存历史或当前置顶的旧边界不提前截断更新翻页', async t => {
+  const h = fixture(t, async () => ({ items: [raw('2', at('14:00:30')), raw('1', at('13:59:00'), { isTop: true })], end: false }));
+  h.store.db.prepare('UPDATE targets SET interval_ms=60000 WHERE uid=?').run(uid);
+  h.store.updateJob(h.update.id, { checkpoint: { initialized: true, lastScanAt: at('14:00:00'), boundaryIds: ['1'] } });
+  h.setTime(at('14:01:00')); await h.worker.tick();
+  assert.equal(h.store.job(h.update.id).checkpoint.foundKnown, false);
+});
+
+test('最新页使用短间隔，历史与长文仍保留原节奏，冷却不被绕过', async t => {
+  const h = fixture(t);
+  h.worker.monitoringGapMs = 3000;
+  await h.worker.beforeRequest({ monitoringHead: true });
+  assert.equal(h.store.account().next_request_at, h.now() + 3000);
+  await assert.rejects(h.worker.beforeRequest({ monitoringHead: true }), error => error.kind === 'wait');
+  h.setTime(h.now() + 3000);
+  await h.worker.beforeRequest();
+  assert.equal(h.store.account().next_request_at, h.now() + 3000);
+  assert.equal(h.store.getSetting('auxiliaryRequestAt:weibo'), h.now() + 15000);
+  h.setTime(h.now() + 3000);
+  await assert.rejects(h.worker.beforeRequest(), error => error.kind === 'wait');
+  await h.worker.beforeRequest({ monitoringHead: true });
+  h.store.setAccount({ cooldown_until: h.now() + 120000 });
+  h.setTime(h.now() + 15000);
+  await assert.rejects(h.worker.beforeRequest({ monitoringHead: true }), error => error.kind === 'wait');
+});
+
+test('延迟检查与账号吞吐分开计算，个人频率和关闭状态被正确计入', t => {
+  const h = fixture(t);
+  const uids = [uid];
+  for (let i = 1; i < 15; i++) {
+    const other = String(Number(uid) + i); uids.push(other);
+    h.store.addTarget(other, '测试', h.now(), 'weibo', { archiveHistory: false });
+  }
+  h.store.db.prepare("UPDATE targets SET capture_mode='from_now',interval_ms=60000").run();
+  for (const job of h.store.jobs().filter(job => job.kind === 'updates')) h.store.updateJob(job.id, {
+    checkpoint: { lastScanAt: h.now() - 180000 }, next_run_at: h.now() - 120000,
+  });
+  let health = h.store.monitoringHealth('weibo', 15000, h.now());
+  assert.equal(health.capacityLimited, true); assert.equal(health.minimumCycleMs, 225000);
+  assert.equal(health.delayed.length, 15);
+  health = h.store.monitoringHealth('weibo', 3000, h.now());
+  assert.equal(health.capacityLimited, false); assert.equal(health.minimumCycleMs, 45000);
+  for (const other of uids.slice(1)) h.store.setSetting('targetPolicy:' + other, { intervalMs: 3600000 });
+  assert.equal(h.store.monitoringHealth('weibo', 15000, h.now()).capacityLimited, false);
+  h.store.setSetting('monitorEnabled', false);
+  assert.equal(h.store.monitoringHealth('weibo', 3000, h.now()).activeAuthors, 0);
+  assert.equal(h.store.monitoringHealth('weibo', 3000, h.now()).delayed.length, 0);
+});
+
+test('15 位博主按北京时间每分钟检查，HTTP 正常时一轮不再串行等待 15 秒每人', async t => {
+  const calls = new Map();
+  const h = fixture(t, async (author, _, __, options) => {
+    await h.worker.beforeRequest(options);
+    calls.set(author, [...(calls.get(author) || []), h.now()]);
+    return { items: [], end: true };
+  });
+  h.worker.monitoringGapMs = 3000;
+  for (let i = 1; i < 15; i++) h.store.addTarget(String(Number(uid) + i), '测试', h.now(), 'weibo', { archiveHistory: false });
+  h.store.db.prepare("UPDATE targets SET capture_mode='from_now',interval_ms=60000").run();
+  const start = h.now();
+  for (let i = 0; i < 300 && h.now() < start + 120000; i++) {
+    await h.worker.tick();
+    h.setTime(h.now() + h.worker.nextDelay());
+  }
+  assert.equal(calls.size, 15);
+  for (const checks of calls.values()) {
+    assert.ok(checks.length >= 2);
+    assert.ok(checks[0] - start < 60000);
+    assert.ok(checks[1] - checks[0] <= 61000);
+  }
+});
+
+test('已到期的最新页优先于较早排队的长文与补查页', t => {
+  const h = fixture(t), other = '1234567891';
+  h.store.addTarget(other, '另一位测试博主', h.now(), 'weibo', { archiveHistory: false });
+  h.store.db.prepare("UPDATE targets SET capture_mode='from_now'").run();
+  const head = h.store.jobs().find(job => job.uid === other && job.kind === 'updates');
+  h.store.updateJob(h.update.id, { checkpoint: { page: 2 }, next_run_at: h.now() - 600000 });
+  h.store.updateJob(head.id, { next_run_at: h.now() });
+  assert.equal(h.worker.pickJob().job.id, head.id);
+  h.store.updateJob(h.update.id, { checkpoint: { page: 1, pageLoaded: true, pending: [{ isLongText: true }] } });
+  h.worker.adapter.needsRequest = () => true;
+  assert.equal(h.worker.pickJob().job.id, head.id);
+});
+
+test('睡眠恢复不依赖进程重启，冷却结束后补查间断，手动关闭的任务不被开启', async t => {
+  const h = fixture(t);
+  h.store.updateJob(h.update.id, { checkpoint: { initialized: true, lastScanAt: h.now() - 60000 }, last_success_at: h.now() - 60000 });
+  h.worker.running = true; h.worker.lastTickAt = h.now();
+  h.setTime(h.now() + 3600000);
+  h.store.setAccount({ cooldown_until: h.now() + 120000 });
+  await h.worker.tick();
+  assert.equal(h.worker.resumeCheckPending, true);
+  assert.equal(h.store.job(h.update.id).checkpoint.catchupFrom, undefined);
+  h.setTime(h.now() + 120000);
+  await h.worker.tick();
+  assert.ok(h.store.job(h.update.id).checkpoint.catchupFrom < h.now() - 3600000);
+  assert.equal(h.worker.resumeCheckPending, false);
+  const history = h.store.jobs().find(job => job.kind === 'history');
+  assert.equal(history.status, 'paused');
+});
+
 test('分时边界即时调整下次到期时间，失败退避与任务暂停不会被新频率覆盖', t => {
   const h = fixture(t); h.store.setSetting('schedule:weibo', plan);
   h.store.updateJob(h.update.id, { checkpoint: { lastScanAt: at('07:40:00') } });

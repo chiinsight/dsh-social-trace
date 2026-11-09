@@ -59,6 +59,17 @@ test('授权缺失时重复采集和检查连接均不启动 Chrome，只有主�
   assert.equal(h.launches.length, 1);
 });
 
+test('最新页重验证缓存且限制等待时间，历史请求保持原策略', async t => {
+  const h = setup(t);
+  h.browser.persistSession({ uid: '8000000000', storageState: h.state });
+  await h.browser.timeline('1234567890', 1, null, { monitoringHead: true });
+  await h.browser.timeline('1234567890', 2);
+  assert.equal(h.requests[0].requestOptions.timeout, 10000);
+  assert.equal(h.requests[0].requestOptions.headers['Cache-Control'], 'no-cache');
+  assert.equal(h.requests[1].requestOptions.timeout, undefined);
+  assert.equal(h.launches.length, 0);
+});
+
 test('损坏的授权文件只报告连接错误，不启动浏览器或删除已有文件', async t => {
   const h = setup(t);
   writeFileSync(h.browser.sessionFile, '{broken', { mode: 0o600 });

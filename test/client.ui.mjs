@@ -27,10 +27,10 @@ window.__ModuleLoader__={load(reg){reg.factory(()=>React).apply({slots:{inject:(
 
 test('插件流向图：多平台汇总、折叠连线、博主档案联动与真实状态动效', async t => {
   const groups = [
-    ['weibo', [['林间笔记', 1280], ['科技周刊', 864], ['阿宁观察', 572]]],
+    ['weibo', [['示例博主甲', 1280], ['示例博主乙', 864], ['示例博主丙', 572]]],
     ['x', [['Orbit Notes', 648], ['Mira Builds', 431], ['Evan AI', 309]]],
-    ['bilibili', [['像素实验室', 276], ['镜头之外', 194]]],
-    ['rednote', [['生活切片', 386], ['设计日常', 218]]],
+    ['bilibili', [['示例博主丁', 276], ['示例博主戊', 194]]],
+    ['rednote', [['示例博主己', 386], ['示例博主庚', 218]]],
   ];
   const targets = groups.flatMap(([platform, authors], group) => authors.map(([name], index) => ({ uid: String(1000 + group * 10 + index), name, platform })));
   const counts = groups.flatMap(([, authors]) => authors.map(([, count]) => count));
@@ -44,7 +44,7 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   };
   state.progress = [{ uid: '1011', saved: 431, lastSavedAt: 1000, lastCheckedAt: null, nextCheckAt: null, history: { status: 'paused', started: false, pages: 0, oldestAt: null, reportedTotal: 1000, estimatedRemaining: 569 } }];
   state.update = { currentVersion: '0.1.0', latestVersion: '0.2.0', updateAvailable: true, checkedAt: new Date().toISOString(), canApply: true, phase: 'idle', manualCommand: 'dsh plugin --profile desktop add dsh-social-trace@latest' };
-  state.agent = { transportAvailable: true, config: { enabled: true, botId: 'demo-bot', targetId: 'demo-target', uids: [] }, deliveries: [{ id: 'demo-delivery', author: '林间笔记', status: 'sent', created_at: Date.now() }] };
+  state.agent = { transportAvailable: true, config: { enabled: true, botId: 'demo-bot', targetId: 'demo-target', uids: [] }, deliveries: [{ id: 'demo-delivery', author: '示例博主甲', status: 'sent', created_at: Date.now() }] };
   state.platforms[0].schedule = { enabled: true, fallbackMinutes: 60, windows: [{ start: '08:00', end: '15:00', intervalMinutes: 1 }] };
   state.platforms[0].frequency = { intervalMs: 60000, nextChangeAt: Date.now() + 3600000, nextIntervalMs: 3600000 };
   let postFixture = [];
@@ -171,7 +171,7 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   assert.equal(await page.locator('.st-author-detail[open]').count(), 0);
   assert.equal(await page.locator('.st-author-node').first().evaluate(node => getComputedStyle(node).borderTopWidth), '1px');
   const compactHeight = await page.locator('.st-author-node').first().evaluate(node => node.offsetHeight);
-  await page.getByLabel('展开或收起林间笔记监控频率', { exact: true }).click();
+  await page.getByLabel('展开或收起示例博主甲监控频率', { exact: true }).click();
   assert.ok(await page.locator('.st-author-node').first().evaluate(node => node.offsetHeight) > compactHeight);
   await page.getByRole('button', { name: '收起频率详情', exact: true }).click();
   assert.equal(await page.locator('.st-author-detail[open]').count(), 0);
@@ -249,7 +249,7 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   assert.equal(writes.at(-1).body.scope, 'all');
   await master.click();
   await page.waitForFunction(() => document.querySelector('[aria-label="总控制器监控开关"]')?.getAttribute('aria-checked') === 'true');
-  assert.equal(await page.getByRole('switch', { name: '林间笔记监控开关', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('switch', { name: '示例博主甲监控开关', exact: true }).count(), 0);
   if (process.env.SOCIAL_TRACE_UI_SCREENSHOT) {
     await page.waitForTimeout(250);
     await page.screenshot({ path: process.env.SOCIAL_TRACE_UI_SCREENSHOT, fullPage: true });
@@ -297,7 +297,7 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   await page.locator('[data-archive-author="1011"] > summary').click();
   await page.locator('[data-archive-author="1011"][open]').waitFor();
   await page.locator('.st-library-head').click();
-  await page.getByRole('button', { name: '设置博主：林间笔记', exact: true }).click();
+  await page.getByRole('button', { name: '设置博主：示例博主甲', exact: true }).click();
   const authorSettings = page.getByRole('dialog', { name: '节点监控设置', exact: true });
   assert.equal(await authorSettings.getByRole('tab', { name: '新动态监控', exact: true }).getAttribute('aria-selected'), 'true');
   assert.equal(await authorSettings.getByLabel('缓存消息时间范围', { exact: true }).count(), 0);
@@ -313,20 +313,20 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   assert.equal(writes.at(-1).body.uid, '1000');
   assert.equal(writes.at(-1).body.schedule.windows[0].intervalMinutes, 3);
   await authorSettings.getByRole('button', { name: '关闭监控设置', exact: true }).click();
-  await page.getByRole('button', { name: '设置博主：林间笔记', exact: true }).click();
+  await page.getByRole('button', { name: '设置博主：示例博主甲', exact: true }).click();
   assert.match(await authorSettings.locator('.st-rule-table').innerText(), /每 3 分钟检查一次/);
   await authorSettings.getByRole('button', { name: '关闭监控设置', exact: true }).click();
   await page.getByRole('button', { name: '设置微博平台', exact: true }).click();
   await authorSettings.getByRole('heading', { name: '微博监控设置', exact: true }).waitFor();
-  assert.match(await authorSettings.getByRole('region', { name: '独立时间配置的博主', exact: true }).innerText(), /林间笔记/);
-  assert.doesNotMatch(await authorSettings.getByRole('region', { name: '独立时间配置的博主', exact: true }).innerText(), /科技周刊/);
+  assert.match(await authorSettings.getByRole('region', { name: '独立时间配置的博主', exact: true }).innerText(), /示例博主甲/);
+  assert.doesNotMatch(await authorSettings.getByRole('region', { name: '独立时间配置的博主', exact: true }).innerText(), /示例博主乙/);
   if (process.env.SOCIAL_TRACE_UI_OUTPUT) await authorSettings.screenshot({ path: join(process.env.SOCIAL_TRACE_UI_OUTPUT, 'social-trace-25-schedule.png') });
   await authorSettings.getByRole('button', { name: '保存监控时间', exact: true }).click();
   await authorSettings.getByRole('status').filter({ hasText: '监控时间与频率已保存' }).waitFor();
   assert.equal(writes.at(-1).body.applyToAll, undefined);
   assert.equal(state.targets[0].policy.schedule.windows[0].intervalMinutes, 3, '平台保存不清除个人设置');
-  await authorSettings.getByRole('button', { name: '查看林间笔记的独立配置', exact: true }).click();
-  await authorSettings.getByRole('heading', { name: '林间笔记的监控设置', exact: true }).waitFor();
+  await authorSettings.getByRole('button', { name: '查看示例博主甲的独立配置', exact: true }).click();
+  await authorSettings.getByRole('heading', { name: '示例博主甲的监控设置', exact: true }).waitFor();
   await authorSettings.getByRole('button', { name: '关闭监控设置', exact: true }).click();
   await page.getByRole('button', { name: '设置微博平台', exact: true }).click();
 
@@ -417,9 +417,9 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   assert.equal(await page.locator('.st-author-table .st-platform-badge').count(), 10);
   assert.equal(await page.locator('.st-author-table .st-uid-tag').count(), 10);
   await page.getByRole('button', { name: '按已存排序', exact: true }).click();
-  assert.match(await page.locator('.st-author-overview').first().innerText(), /林间笔记/);
+  assert.match(await page.locator('.st-author-overview').first().innerText(), /示例博主甲/);
   await page.getByRole('button', { name: '按已存排序', exact: true }).click();
-  assert.match(await page.locator('.st-author-overview').first().innerText(), /镜头之外/);
+  assert.match(await page.locator('.st-author-overview').first().innerText(), /示例博主戊/);
   await page.getByRole('button', { name: '按消息总数排序', exact: true }).click();
   assert.match(await page.locator('.st-author-overview').first().innerText(), /Mira Builds/);
   assert.equal(await page.locator('.st-author-table th[aria-sort=descending]').count(), 1);
@@ -489,7 +489,7 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   await page.waitForFunction(() => !document.querySelector('.st-save-feedback'), { timeout: 7000 });
   assert.equal(await page.locator('.st-main h1').count(), 1, '入库动效结束后主界面仍然可用');
   assert.deepEqual(errors, []);
-  await page.getByRole('button', { name: '查看博主：林间笔记' }).click();
+  await page.getByRole('button', { name: '查看博主：示例博主甲' }).click();
   await page.getByRole('button', { name: '监控流向', exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll('.st-flow-particle').length === 0);
 
@@ -1006,10 +1006,10 @@ test('雪球真实页面流程：独立授权、读取资料、确认记录方�
   assert.equal(runtime.store.account().status, 'needs_login');
   assert.equal(runtime.store.account('xueqiu').status, 'ready');
   await page.getByRole('dialog', { name: '添加雪球博主', exact: true }).waitFor();
-  await page.getByLabel('雪球博主主页或 UID', { exact: true }).fill('https://www.xueqiu.com/u/1102105103');
+  await page.getByLabel('雪球博主主页或 UID', { exact: true }).fill('https://www.xueqiu.com/u/9000000002');
   await page.getByRole('button', { name: '添加并读取资料', exact: true }).click();
   await page.getByRole('heading', { name: '从什么时候开始保存？', exact: true }).waitFor();
-  const key = 'xueqiu:1102105103';
+  const key = 'xueqiu:9000000002';
   assert.equal(runtime.store.target(key).name, '雪球演示作者');
   assert.equal(runtime.store.target(key).capture_mode, 'pending');
   assert.ok(await page.getByRole('region', { name: '确认记录方式' }).getByText('30,945 条消息').isVisible());

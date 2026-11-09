@@ -35,7 +35,7 @@ test('雪球授权来源严格限定官网，不混用 www 会话或跟随重定
 test('雪球后台与检查连接不启动浏览器；只有主动授权开窗，确认后 HTTP 继续且释放响应', async t => {
   const h = setup(t);
   await assert.rejects(h.browser.checkLogin(), error => error.kind === 'login');
-  await assert.rejects(h.browser.timeline('1102105103', 1), error => error.kind === 'login');
+  await assert.rejects(h.browser.timeline('9000000002', 1), error => error.kind === 'login');
   assert.equal(h.launches.length, 0);
   await h.browser.login();
   assert.equal(h.launches[0].path, join(h.browser.directory, 'xueqiu-browser'));
@@ -43,7 +43,7 @@ test('雪球后台与检查连接不启动浏览器；只有主动授权开窗�
   assert.equal(h.launches[0].options.ignoreDefaultArgs, undefined);
   assert.equal(await h.browser.checkLogin(), '8000000000');
   assert.equal(h.browser.context, null);
-  await h.browser.timeline('1102105103', 1);
+  await h.browser.timeline('9000000002', 1);
   assert.equal(h.launches.length, 1);
   assert.equal(h.requests.length, 2);
   assert.equal(h.disposed.length, 2);
@@ -55,7 +55,7 @@ test('雪球后台与检查连接不启动浏览器；只有主动授权开窗�
 for (const status of [401, 429, 567]) test(`雪球 ${status} 不绕过限制或自动开窗重试`, async t => {
   const h = setup(t, status);
   h.browser.persistSession({ uid: '8000000000', storageState: h.state });
-  await assert.rejects(h.browser.timeline('1102105103', 1), error => error.kind === ({401:'login',429:'limited',567:'verification'})[status]);
+  await assert.rejects(h.browser.timeline('9000000002', 1), error => error.kind === ({401:'login',429:'limited',567:'verification'})[status]);
   assert.equal(h.launches.length, 0); assert.equal(h.requests.length, 1); assert.equal(h.disposed.length, 1);
 });
 
