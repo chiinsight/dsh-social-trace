@@ -21,6 +21,17 @@ async function server(t, options) {
 }
 const headers = { 'Content-Type': 'application/json', 'X-Social-Trace': '1' };
 
+test('已删除对话的报告不能再通过运行 ID 定位，恢复后可访问', async t => {
+  const { runtime, base } = await server(t);
+  const session = runtime.chat.newSession('报告');
+  runtime.store.db.prepare("INSERT INTO chat_runs(id,session_id,input,status,created_at) VALUES(?,?,?,'completed',?)").run('fixture-run', session, '测试', Date.now());
+  assert.equal((await fetch(base + '/chat/run?id=fixture-run')).status, 200);
+  await runtime.chat.deleteSession(session);
+  assert.equal((await fetch(base + '/chat/run?id=fixture-run')).status, 404);
+  runtime.chat.restoreSession(session);
+  assert.equal((await fetch(base + '/chat/run?id=fixture-run')).status, 200);
+});
+
 for (const scope of ['总控', '平台', '博主', '新动态', '历史缓存', '批量历史缓存', '账号']) {
   test(`真实 HTTP 关闭入口：${scope}在全文请求中关闭后不继续入库`, async t => {
     const { runtime, base } = await server(t), uid = '1234567890';

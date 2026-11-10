@@ -1,6 +1,6 @@
 {
   "name": "dsh-social-trace",
-  "version": "0.1.2",
+  "version": "0.1.12",
   "description": "Social Trace：微博与雪球增量监控、可视化拓扑、历史缓存与本地检索",
   "type": "module",
   "license": "MIT",
@@ -33,18 +33,25 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib",
-    "assets",
+    "lib/*.js",
+    "lib/platforms/**/*.js",
+    "assets/icon.svg",
+    "assets/weibo.ico",
+    "assets/xueqiu.png",
+    "assets/NOTICE.md",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES"
   ],
   "scripts": {
     "start": "node scripts/preview.mjs",
     "login": "node scripts/login.mjs",
     "probe": "node scripts/probe.mjs",
     "test": "node --test test/*.test.mjs",
-    "test:ui": "node --test test/client.ui.mjs"
+    "test:ui": "node --test test/client.ui.mjs",
+    "build": "node scripts/build-markdown.mjs",
+    "prepack": "npm run build"
   },
   "icon": "assets/icon.svg",
   "dsh": {
@@ -63,7 +70,11 @@
     "playwright": "1.64.1"
   },
   "devDependencies": {
+    "esbuild": "0.25.12",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "react-markdown": "10.1.0",
+    "remark-cjk-friendly": "2.3.1",
+    "remark-gfm": "4.0.1"
   }
 }

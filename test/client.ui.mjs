@@ -8,7 +8,7 @@ import { createRuntime } from '../lib/index.js';
 import { createUpdates } from '../lib/update.js';
 const offlineUpdates = () => createUpdates({ fetchImpl: async () => new Response(JSON.stringify({ version: '0.1.0' })) });
 import { CaptureError } from '../lib/capture-error.js';
-import { parseAuthor } from '../lib/platforms/weibo/index.js';
+import { parseAuthor, normalizePost } from '../lib/platforms/weibo/index.js';
 import { XueqiuBrowser } from '../lib/platforms/xueqiu/index.js';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
@@ -1317,5 +1317,189 @@ for (const platform of ['weibo', 'xueqiu']) test(`${platform} 全流程与布局
   await page.reload();
   await page.getByRole('button', { name: '完成验证', exact: true }).click();
   await page.getByRole('region', { name: name + '账号连接', exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test('业务 Chat：总结、查询、确认监控变更、创建并执行任务，页面状态同步且窄屏可用', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'social-trace-chat-ui-'));
+  const uid = '1234567890', selection = { provider: 'fixture', model: 'fixture-model' };
+  let releaseFirst; const firstRequest = new Promise(resolve => { releaseFirst = resolve; }); let firstCall = true;
+  const model = { available: () => true, selection: () => selection, generate: async options => {
+    if (firstCall) { firstCall = false; options.onPhase?.('thinking'); await firstRequest; }
+    const input = JSON.parse(options.messages.findLast(item => item.role === 'user').content[0].text).request;
+    if (input === '批量开启两位博主历史缓存') {
+      const calls = [uid, '1234567891'].map((id, index) => ({ id: 'batch-' + index, type: 'tool-call', name: 'control_monitor', arguments: JSON.stringify({ uid: id, kind: 'history', enabled: true }) }));
+      return { text: '', calls, content: calls, source: { kind: 'model', ...selection } };
+    }
+    let text = '', calls = [];
+    if (options.messages.at(-1).role === 'tool') text = input.includes('总结') ? '## 今日观点\n\n测试博主今天表达了一个观点 [S1]\n\n- **核心结论**：保持观察\n- 使用 `本地资料` 核对\n\n| 博主 | 消息 |\n| --- | --- |\n| 测试博主 | 1 |\n\n<script>window.chatInjected=true</script>\n\n[危险链接](javascript:alert(1))' : '已查询：测试博主已加入关注，账号已连接。';
+    else {
+      let name, args;
+      if (input.startsWith('创建')) { name = 'create_summary_task'; args = { name: '工作日总结', uids: [uid], times: ['12:00', '18:00'] }; }
+      else if (input.includes('暂停')) { name = 'control_monitor'; args = { uid, kind: 'updates', enabled: false }; }
+      else if (input.includes('总结')) { name = 'search_posts'; args = { uids: [uid] }; }
+      else { name = 'list_status'; args = {}; }
+      calls = [{ id: 'call', type: 'tool-call', name, arguments: JSON.stringify(args) }];
+    }
+    return { text, calls, content: [...calls, ...(text ? [{ type: 'text', text }] : [])], source: { kind: 'model', ...selection } };
+  } };
+  const runtime = createRuntime(directory, { model, updates: offlineUpdates() });
+  runtime.store.addTarget(uid, '测试博主', Date.now() - 100000, 'weibo', { archiveHistory: false, captureMode: 'from_now' });
+  runtime.store.setAccount({ status: 'ready' });
+  runtime.store.savePost(normalizePost({ idstr: '10001', user: { idstr: uid, screen_name: '测试博主' }, text: '真实观点', created_at: new Date().toISOString() }, uid));
+  let delaySendResponse = false, releaseSendResponse, onSendHeld;
+  const server = createServer((req, res) => {
+    if (delaySendResponse && req.url === '/dsh-social-trace/chat/message') { delaySendResponse = false; const end = res.end.bind(res); res.end = (...args) => { releaseSendResponse = () => end(...args); onSendHeld?.(); return res; }; }
+    if (assets[req.url]) { res.setHeader('Content-Type', 'application/javascript; charset=utf-8'); return res.end(assets[req.url]); }
+    if (req.url === '/') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(shell); }
+    return runtime.handle(req, res);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const browser = await chromium.launch({ headless: true, args: ['--password-store=basic', '--use-mock-keychain'] });
+  t.after(async () => { await browser.close(); server.close(); await runtime.close(); rmSync(directory, { recursive: true, force: true }); });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(8000);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('http://127.0.0.1:' + server.address().port);
+  await page.getByRole('button', { name: '新建对话', exact: true }).click();
+  await page.getByRole('region', { name: 'Social Trace 业务 Chat' }).waitFor().catch(async error => { throw new Error(JSON.stringify(errors) + '\n' + await page.locator('body').innerText() + '\n' + error.message); });
+  assert.equal(await page.getByRole('region', { name: '历史对话' }).count(), 1);
+  assert.equal(await page.locator('.st-chat.is-empty').count(), 1);
+  assert.equal(await page.getByRole('button', { name: '新建对话', exact: true }).getAttribute('aria-current'), 'page');
+  assert.equal(await page.getByRole('button', { name: 'Chat', exact: true }).count(), 0, '对话页不保留重复 Chat 入口');
+  if (process.env.SOCIAL_TRACE_UI_OUTPUT) await page.screenshot({ path: join(process.env.SOCIAL_TRACE_UI_OUTPUT, 'business-chat-welcome.png'), fullPage: true });
+  const send = async input => {
+    await page.getByRole('textbox', { name: '告诉 Social Trace 你想做什么' }).fill(input);
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+  };
+  const composer = page.getByRole('textbox', { name: '告诉 Social Trace 你想做什么' });
+  await composer.fill('中文输入');
+  await composer.dispatchEvent('compositionstart');
+  await composer.dispatchEvent('keydown', { key: 'Enter', isComposing: true });
+  assert.equal(runtime.chat.sessions().length, 0, '输入法确认不能发送消息');
+  await composer.dispatchEvent('compositionend');
+  await composer.press('Shift+Enter');
+  assert.match(await composer.inputValue(), /\n/);
+  assert.equal(runtime.chat.sessions().length, 0, 'Shift+Enter 只换行');
+  await composer.fill('总结今天测试博主的观点'); await composer.press('Enter');
+  await page.getByRole('list', { name: '最近处理步骤' }).getByText('模型正在思考', { exact: true }).waitFor();
+  if (process.env.SOCIAL_TRACE_UI_OUTPUT) await page.screenshot({ path: join(process.env.SOCIAL_TRACE_UI_OUTPUT, 'chat-live-progress.png'), fullPage: true });
+  await page.getByRole('button', { name: '新建对话', exact: true }).click();
+  await page.locator('.st-chat.is-empty').waitFor();
+  assert.equal(await composer.inputValue(), '');
+  await composer.fill('不应串到上一条的草稿');
+  await page.getByRole('button', { name: '新建对话', exact: true }).click();
+  assert.equal(await composer.inputValue(), '', '重复新建也必须重置草稿');
+  await page.getByRole('region', { name: '历史对话' }).getByRole('button', { name: '总结今天测试博主的观点', exact: true }).click();
+  releaseFirst();
+  await page.getByText('测试博主今天表达了一个观点 [S1]', { exact: true }).waitFor();
+  assert.equal(await page.locator('.st-chat-source-list a').count(), 1);
+  assert.equal(await page.locator('.st-chat-answer h2').first().innerText(), '今日观点');
+  assert.equal(await page.locator('.st-chat-answer strong').first().innerText(), '核心结论');
+  assert.equal(await page.locator('.st-chat-answer table tbody tr').count(), 1);
+  assert.equal(await page.locator('.st-chat-answer script, .st-chat-answer a[href^="javascript:"]').count(), 0);
+  assert.equal(await page.evaluate(() => window.chatInjected), undefined);
+  assert.equal(await page.locator('.st-chat-source-list').first().getAttribute('open'), null);
+  assert.equal(await page.locator('.st-chat-trace').first().getAttribute('open'), null);
+  if (process.env.SOCIAL_TRACE_UI_OUTPUT) await page.screenshot({ path: join(process.env.SOCIAL_TRACE_UI_OUTPUT, 'chat-readable-answer.png'), fullPage: true });
+  const savedRun = runtime.chat.runs(runtime.chat.sessions()[0].id)[0];
+  const longAnswer = '## 长对话布局验证\n\n' + Array.from({ length: 90 }, (_, index) => '第 ' + index + ' 段：用于检查长回答滚动时标题和输入区固定。').join('\n\n');
+  runtime.store.db.prepare('UPDATE chat_runs SET answer=? WHERE id=?').run(longAnswer, savedRun.id);
+  await page.getByRole('heading', { name: '长对话布局验证', exact: true }).waitFor({ state: 'attached' });
+  const chatScroll = page.getByRole('region', { name: '消息内容', exact: true });
+  const bounds = () => page.evaluate(() => ({ header: document.querySelector('.st-chat-toolbar').getBoundingClientRect().top, dock: document.querySelector('.st-chat-dock').getBoundingClientRect().bottom, mainScroll: document.querySelector('.st-main').scrollTop }));
+  const beforeScroll = await bounds();
+  await chatScroll.evaluate(node => { node.scrollTop = node.scrollHeight / 2; node.dispatchEvent(new Event('scroll', { bubbles: true })); });
+  await page.getByRole('button', { name: '回到最新消息 ↓', exact: true }).waitFor();
+  const readingAt = await chatScroll.evaluate(node => node.scrollTop);
+  runtime.store.db.prepare('UPDATE chat_runs SET answer=? WHERE id=?').run(longAnswer + '\n\n追加内容', savedRun.id);
+  await page.waitForFunction(() => document.querySelector('.st-chat-answer')?.textContent.includes('追加内容'));
+  assert.ok(Math.abs(await chatScroll.evaluate(node => node.scrollTop) - readingAt) < 2, '更新不能抢走用户上翻阅读位置');
+  await page.getByRole('button', { name: '回到最新消息 ↓', exact: true }).click();
+  const afterScroll = await bounds();
+  assert.equal(afterScroll.header, beforeScroll.header, '长文滚动后标题栏位置不动');
+  assert.equal(afterScroll.dock, beforeScroll.dock, '长文滚动后输入区位置不动');
+  assert.equal(afterScroll.mainScroll, 0, '主页面本身不能随消息滚动');
+  assert.equal(await page.locator('.st-aside > button').first().innerText(), '新建对话');
+  if (process.env.SOCIAL_TRACE_UI_OUTPUT) await page.screenshot({ path: join(process.env.SOCIAL_TRACE_UI_OUTPUT, 'chat-fixed-shell.png'), fullPage: true });
+  runtime.store.db.prepare('UPDATE chat_runs SET answer=? WHERE id=?').run(savedRun.answer, savedRun.id);
+
+
+  await send('查询监控状态');
+  await page.getByText('已查询：测试博主已加入关注，账号已连接。', { exact: true }).waitFor();
+  await send('暂停测试博主的新动态监控');
+  await page.getByRole('button', { name: '确认执行', exact: true }).waitFor();
+  const job = runtime.store.jobs().find(job => job.kind === 'updates');
+  assert.equal(job.status, 'queued');
+  await page.getByRole('button', { name: '确认执行', exact: true }).click();
+  await page.getByText(/已执行：测试博主：暂停新动态监控/).waitFor();
+  assert.equal(runtime.store.job(job.id).status, 'paused');
+  runtime.store.addTarget('1234567891', '第二位测试博主');
+  for (const item of runtime.store.jobs().filter(item => item.kind === 'history')) runtime.store.updateJob(item.id, { status: 'paused' });
+  await send('批量开启两位博主历史缓存');
+  const preview = page.getByLabel('待确认的业务变更');
+  await preview.waitFor();
+  assert.equal(await preview.locator('li').count(), 2, '两个博主必须同时出现在确认清单里');
+  assert.match(await preview.innerText(), /第二位测试博主/);
+  assert.ok(runtime.store.jobs().filter(item => item.kind === 'history').every(item => item.status === 'paused'));
+  await preview.getByRole('button', { name: '确认执行', exact: true }).click();
+  await preview.waitFor({ state: 'detached' });
+  assert.ok(runtime.store.jobs().filter(item => item.kind === 'history').every(item => item.status === 'queued'));
+  await send('创建工作日总结任务');
+  await page.getByRole('button', { name: '确认执行', exact: true }).click();
+  assert.equal(await page.getByRole('button', { name: /^定时任务/ }).count(), 0, '标题栏移除定时任务入口');
+  const task = runtime.chat.tasks()[0]; assert.deepEqual(task.times, ['12:00', '18:00']);
+  runtime.store.db.prepare('UPDATE chat_tasks SET next_run_at=? WHERE id=?').run(Date.now() - 1000, task.id);
+  runtime.chat.tick(); await runtime.chat.work;
+  await page.getByRole('region', { name: '历史对话' }).getByRole('button', { name: task.name, exact: true }).click();
+  await page.getByText('测试博主今天表达了一个观点 [S1]', { exact: true }).waitFor();
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Chat 不应横向溢出');
+    if (process.env.SOCIAL_TRACE_UI_OUTPUT) await page.screenshot({ path: join(process.env.SOCIAL_TRACE_UI_OUTPUT, 'business-chat-' + width + '.png'), fullPage: true });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.reload(); await page.getByRole('region', { name: '历史对话' }).getByRole('button', { name: '总结今天测试博主的观点', exact: true }).click();
+  await page.getByText('测试博主今天表达了一个观点 [S1]', { exact: true }).waitFor();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const oldCount = runtime.chat.sessions().length;
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click();
+  await page.getByRole('button', { name: '新建对话', exact: true }).click();
+  await page.locator('.st-chat.is-empty').waitFor();
+  await composer.fill('查询监控状态');
+  await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+  await page.waitForFunction(() => !document.querySelector('.st-chat-send')?.disabled);
+  await composer.press('Enter');
+  await page.getByText('已查询：测试博主已加入关注，账号已连接。', { exact: true }).waitFor();
+  assert.equal(runtime.chat.sessions().length, oldCount + 1, '回车首条消息真正创建独立会话');
+  assert.equal(await page.locator('.st-chat-question').count(), 1, '新对话不能带入历史问题');
+  await composer.fill('当前会话草稿');
+  await page.getByRole('region', { name: '历史对话' }).getByRole('button', { name: '总结今天测试博主的观点', exact: true }).click();
+  assert.equal(await composer.inputValue(), '', '切换历史不能串草稿');
+  await page.getByRole('region', { name: '历史对话' }).getByRole('button', { name: '查询监控状态', exact: true }).click();
+  assert.equal(await composer.inputValue(), '当前会话草稿', '返回会话恢复自己的草稿');
+  assert.deepEqual(await page.getByRole('navigation', { name: 'Social Trace 导航', exact: true }).locator(':scope > button, :scope > details > summary').allTextContents(), ['监控流向', '关注与档案', '消息中心' + (await page.locator('.st-nav-badge').innerText().catch(() => ''))]);
+  delaySendResponse = true;
+  const held = new Promise(resolve => { onSendHeld = resolve; });
+  await composer.fill('请求延迟回归');
+  await page.waitForFunction(() => !document.querySelector('.st-chat-send')?.disabled);
+  await composer.press('Enter'); await held;
+  await page.waitForFunction(() => document.querySelector('.st-chat-send')?.disabled);
+  await page.getByRole('button', { name: '新建对话', exact: true }).click();
+  await page.locator('.st-chat.is-empty').waitFor();
+  await composer.fill('留在新对话');
+  const delayedResponse = page.waitForResponse(response => response.url().endsWith('/chat/message'));
+  assert.equal(typeof releaseSendResponse, 'function'); releaseSendResponse(); await delayedResponse;
+  await page.getByRole('button', { name: '发送', exact: true }).waitFor();
+  assert.equal(await composer.inputValue(), '留在新对话', '旧请求返回不能清空新会话草稿');
+  assert.equal(await page.locator('.st-chat-question').count(), 0, '旧请求返回不能抢回选中的新对话');
+  const history = page.getByRole('region', { name: '历史对话' });
+  const row = history.locator('.st-chat-history-row').filter({ has: page.getByRole('button', { name: '总结今天测试博主的观点', exact: true }) });
+  await row.hover();
+  await row.getByRole('button', { name: '删除对话：总结今天测试博主的观点', exact: true }).click();
+  await page.getByRole('button', { name: '撤销删除', exact: true }).waitFor();
+  assert.equal(await history.getByRole('button', { name: '总结今天测试博主的观点', exact: true }).count(), 0);
+  await page.getByRole('button', { name: '撤销删除', exact: true }).click();
+  await history.getByRole('button', { name: '总结今天测试博主的观点', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: /^定时任务/ }).count(), 0);
   assert.deepEqual(errors, []);
 });

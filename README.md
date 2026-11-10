@@ -25,6 +25,7 @@ Social Trace 是 DeepSeek Harness 的本地社交动态监控插件。它按博�
 | 导出 | 单博主 Markdown / JSONL，正文和来源一起带走 |
 | 可视化流向 | 博主 → 平台 → Social Trace → 资料库四层拓扑，状态、进度、异常一眼可见 |
 | dsh-im 推送 | 新动态原文推送到 QQ / 微信；支持多个接收目标；默认关闭 |
+| 业务 Chat | 复用 DSH 默认模型，总结、查询、添加监控、调整频率和管理本地总结任务；变更确认后执行 |
 | 本地优先 | 授权会话只存插件目录（0600），资料库不额外上传云端，不写进仓库 |
 
 ## 它怎么工作
@@ -37,20 +38,9 @@ Social Trace 是 DeepSeek Harness 的本地社交动态监控插件。它按博�
 
 需要 DeepSeek Harness 桌面版、Google Chrome，以及 Node.js 22.19 或以上。
 
-从 npm 安装（也可以在 Harness 的插件管理里直接安装 `dsh-social-trace`）：
+在 DeepSeek Harness 的「设置 → 插件」中安装 `dsh-social-trace@latest`。
 
-```sh
-dsh plugin --profile desktop add dsh-social-trace
-```
-
-也可以从源码安装：
-
-```sh
-git clone https://github.com/chiinsight/dsh-social-trace.git
-cd dsh-social-trace
-npm ci
-dsh plugin --profile desktop add .
-```
+desktop profile 由 Harness 应用管理，CLI 的 `dsh plugin --profile desktop add ...` 会被拒绝；不要用这条命令安装 desktop 插件。开发调试时，请使用独立的非 desktop profile，或通过 Harness 插件管理器安装本地构建。
 
 安装后完全退出并重新打开 Harness，在侧栏打开 Social Trace。
 
@@ -74,6 +64,15 @@ dsh plugin --profile desktop add .
 
 配置入口：大屏的 dsh-im 节点，或「连接与设置」里的消息推送区域。
 
+## 业务 Chat
+
+在侧栏打开 Chat，可以直接问本地资料、让模型总结、创建定时总结任务，或让模型帮你添加监控、调整频率。
+
+- 模型复用 DSH 的默认模型，插件不保存 API Key。
+- 写操作只生成预览，必须在界面确认后才会执行。
+- 聊天记录、总结和引用来源保存在本机资料库。
+- 使用远程模型时，问答涉及到的博文文字会作为上下文发送给该模型；不需要时请缩小提问范围，或改用本地模型。
+
 ## 数据放在哪
 
 默认在 `~/.local/share/dsh-social-trace/`，也可以在设置里改到自己的文件夹。
@@ -94,14 +93,14 @@ dsh plugin --profile desktop add .
 - 已删除、被权限挡住或超出平台可见范围的内容无法补回。
 - 平台要求登录/验证时会暂停采集，处理后继续；不会绕过验证码、轮换账号或使用代理池。
 - 雪球文章只保存标题和原文链接，不保存文章正文。
-- 当前推送的是原文通知；AI 总结和 IM 内问答尚未接入。
+- Chat 可生成带来源的本地总结、创建定时总结任务并控制监控；使用远程模型时，选定文字会交给该模型。当前总结任务按天生成本地报告，自动 IM 总结推送与 IM 内问答尚未接入。
 
 ## 开发
 
 ```sh
 npm ci
-npm test        # 254 项离线测试
-npm run test:ui # 5 项界面测试（需要 Chrome）
+npm test        # 后台与离线测试
+npm run test:ui # 界面测试（需要 Chrome）
 ```
 
 ## 许可

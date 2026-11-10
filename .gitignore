@@ -17,3 +17,15 @@ dist/
 
 # 内部过程文档不随仓库发布
 docs/
+
+# Keep private notes and release artifacts out of public commits.
+*.[mM][dD]
+!README.md
+!assets/NOTICE.md
+*.tgz
+*.zip
+test-results/
+playwright-report/
+*cookie*.json*
+*.pem
+*.key

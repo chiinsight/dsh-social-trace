@@ -72,7 +72,8 @@ test('已配置 Agent 使用设置分组；接入指引与未开放能力默认�
   assert.doesNotMatch(addHtml, /st-destination-row/);
   assert.match(addHtml, /更多设置 → 投递设置 → 新建目标/);
   assert.match(addHtml, /已聊过的会话/); assert.match(addHtml, /微信仅支持个人接收人，不支持群/);
-  assert.match(html, /尚未接入模型与 Agent 执行/);
+  assert.match(html, /业务 Chat/); assert.match(html, /等待 DSH 模型/);
+  assert.match(html, /只保存本地报告/);
   assert.match(addHtml, /<details class="st-setting-help"><summary>如何配置接收目标/);
   assert.doesNotMatch(html, /<ol[^>]*open/);
 });
