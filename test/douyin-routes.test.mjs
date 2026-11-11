@@ -1,0 +1,71 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRuntime } from '../lib/index.js';
+import { normalizePost } from '../lib/platforms/douyin/data.js';
+
+const external = 'MS4w' + 'B'.repeat(40), uid = 'douyin:' + external;
+const headers = { 'Content-Type': 'application/json', 'X-Social-Trace': '1' };
+test('抖音真实HTTP：添加、资料、确认、定时独立配置、媒体范围读取和暂停', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'social-trace-douyin-http-'));
+  const runtime = createRuntime(directory), server = createServer(runtime.handle);
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const base = 'http://127.0.0.1:' + server.address().port + '/dsh-social-trace';
+  t.after(async () => { server.close(); await runtime.close(); rmSync(directory, { recursive: true, force: true }); });
+  const post = (path, body) => fetch(base + path, { method: 'POST', headers, body: JSON.stringify({ platform: 'douyin', ...body }) });
+  const adapter = runtime.sources.douyin.browser;
+  adapter.checkLogin = async () => 'SYNTHETIC_ACCOUNT_ID';
+  adapter.profile = async () => ({ name: '抖音测试博主', avatar: null, total: 2 });
+  assert.equal((await post('/verify', {})).status, 200);
+  assert.equal((await post('/targets', { url: 'https://www.douyin.com/user/' + external })).status, 200);
+  assert.equal(runtime.store.target(uid).capture_mode, 'pending');
+  assert.equal((await post('/targets/profile', { uid, interactive: true })).status, 200);
+  assert.equal(runtime.store.target(uid).name, '抖音测试博主');
+  assert.equal((await post('/targets/start', { uid, mode: 'from_now' })).status, 200);
+  assert.equal(runtime.store.target(uid).capture_mode, 'from_now');
+  assert.equal((await post('/douyin/config', { config: { times: ['12:00', '20:00'], saveVideo: true } })).status, 200);
+  assert.equal((await post('/douyin/config', { uid, inherit: false, config: { times: ['19:00'], platformAI: true } })).status, 200);
+  assert.equal((await post('/douyin/config', { config: { times: ['09:00'] } })).status, 200);
+  const state = await (await fetch(base + '/status')).json();
+  assert.equal(state.platforms.length, 3); assert.deepEqual(state.douyin.overrides[uid].times, ['19:00']);
+  assert.equal(state.accounts.weibo.status, 'needs_login');
+  const stale = state.douyin.overrides[uid];
+  assert.equal((await post('/douyin/config', { uid, inherit: false, section: 'media', config: { ...stale, saveAudio: true } })).status, 200);
+  assert.equal((await post('/douyin/config', { uid, inherit: false, section: 'frequency', config: { ...stale, times: ['18:00'] } })).status, 200);
+  assert.equal(runtime.store.getSetting('douyinConfig:' + uid).saveAudio, true, '旧的时间表单不能覆盖刚保存的媒体配置');
+  assert.deepEqual(runtime.store.getSetting('douyinConfig:' + uid).times, ['18:00']);
+  assert.equal((await post('/douyin/config', { section: 'media', config: { saveVideo: true } })).status, 200);
+  assert.deepEqual(runtime.store.getSetting('douyinConfig').times, ['09:00'], '媒体分组保存不能重置平台时间');
+  assert.equal((await post('/douyin/config', { section: 'bad', config: {} })).status, 400);
+  assert.equal((await post('/settings', { intervalMinutes: 1 })).status, 400);
+  assert.equal((await post('/douyin/config', { config: { repeat: 'weekdays' } })).status, 200);
+  assert.equal((await post('/douyin/config', { section: 'frequency', config: { times: ['09:00'] } })).status, 200);
+  assert.equal(runtime.store.getSetting('douyinConfig').repeat, 'weekdays', '局部更新不重置未提交的执行日期');
+  assert.equal(runtime.store.getSetting('schedule:weibo', null), null);
+  assert.equal(runtime.store.getSetting('schedule:xueqiu', null), null);
+
+  assert.equal((await post('/douyin/config', { config: { times: ['bad'] } })).status, 400);
+  assert.equal((await post('/targets/policy', { uid, inherit: false, intervalMinutes: 1 })).status, 400);
+  const record = normalizePost({ aweme_id: '91000000000000001', create_time: Date.now() / 1000 | 0,
+    author: { sec_uid: external, nickname: '抖音测试博主' }, desc: '作品说明', video: { duration: 1000, play_addr: { url_list: ['https://v1.douyinvod.com/asset?signature=SYNTHETIC_PRIVATE_URL'] } } }, external);
+  runtime.store.savePost({ ...record, uid, id: 'douyin:' + record.id }, Date.now(), 'updates');
+  const row = runtime.store.db.prepare('SELECT * FROM video_records').get(), path = runtime.videos.paths(row).video;
+  writeFileSync(path, Buffer.alloc(2048)); runtime.videos.patch(row.post_id, { video_status: 'done' });
+  const response = await fetch(base + '/video?id=' + row.post_id, { headers: { Range: 'bytes=10-19' } });
+  assert.equal(response.status, 206); assert.equal((await response.arrayBuffer()).byteLength, 10);
+  assert.equal((await fetch(base + '/video?id=' + row.post_id, { headers: { Range: 'bytes=999999-' } })).status, 416);
+  assert.equal((await fetch(base + '/video?id=../../secrets')).status, 404);
+  runtime.videos.patch(row.post_id, { transcript: '导出识别稿', transcript_status: 'done' });
+  for (const format of ['md', 'jsonl']) {
+    const exported = await (await fetch(base + '/export?uid=' + uid + '&format=' + format)).text();
+    assert.match(exported, /导出识别稿/); assert.doesNotMatch(exported, /SYNTHETIC_PRIVATE_URL|videoURL/);
+  }
+  const content = await (await fetch(base + '/posts?uid=' + uid)).text();
+  assert.doesNotMatch(content, /SYNTHETIC_PRIVATE_URL|videoURL/);
+  assert.equal((await post('/monitoring', { scope: 'target', uid, enabled: false })).status, 200);
+  assert.equal(runtime.store.monitoringEnabled('douyin', uid), false);
+});

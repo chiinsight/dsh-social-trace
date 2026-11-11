@@ -17,6 +17,6 @@ test('npm 发布白名单包含平台代码，排除 lib 内临时凭证、数�
   const output = execFileSync(process.execPath, [npm, 'pack', '--dry-run', '--ignore-scripts', '--json', '--cache', join(directory, 'npm-cache')], { cwd: directory, encoding: 'utf8' });
   const names = JSON.parse(output)[0].files.map(file => file.path);
   for (const name of excluded) assert.equal(names.includes(name), false, name + ' must stay private');
-  for (const name of ['lib/index.js', 'lib/chat.js', 'lib/platforms/weibo/index.js', 'lib/platforms/xueqiu/index.js', 'lib/platforms/xueqiu/media.js', 'assets/NOTICE.md', 'README.md']) assert.ok(names.includes(name), name + ' must be published');
+  for (const name of ['lib/index.js', 'lib/chat.js', 'lib/platforms/weibo/index.js', 'lib/platforms/xueqiu/index.js', 'lib/platforms/xueqiu/media.js', 'lib/platforms/registry.js', 'lib/plain-text.js', 'lib/platforms/weibo/module.js', 'lib/platforms/weibo/media.js', 'lib/platforms/xueqiu/module.js', 'lib/platforms/douyin/module.js', 'lib/platforms/douyin/client.js', 'lib/platforms/douyin/storage.js', 'lib/platforms/douyin/service.js', 'lib/platforms/douyin/index.js', 'lib/platforms/douyin/transcribe.py', 'assets/douyin.ico', 'assets/NOTICE.md', 'README.md']) assert.ok(names.includes(name), name + ' must be published');
   assert.deepEqual(names.filter(name => name.toLowerCase().endsWith('.md')).sort(), ['README.md', 'assets/NOTICE.md']);
 });

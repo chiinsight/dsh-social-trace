@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRuntime } from '../lib/index.js';
@@ -9,6 +9,7 @@ import { createUpdates } from '../lib/update.js';
 const offlineUpdates = () => createUpdates({ fetchImpl: async () => new Response(JSON.stringify({ version: '0.1.0' })) });
 import { CaptureError } from '../lib/capture-error.js';
 import { parseAuthor, normalizePost } from '../lib/platforms/weibo/index.js';
+import { normalizePost as normalizeDouyinPost } from '../lib/platforms/douyin/data.js';
 import { XueqiuBrowser } from '../lib/platforms/xueqiu/index.js';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
@@ -1224,6 +1225,26 @@ for (const platform of ['weibo', 'xueqiu']) test(`${platform} 全流程与布局
   await page.getByRole('tab', { name: '历史消息缓存', exact: true }).click();
   await page.getByRole('button', { name: '重试历史缓存', exact: true }).click();
   assert.equal(runtime.store.job(historyJob.id).status, 'queued');
+  if (platform === 'weibo') {
+    const pending = { idstr: '940000000000001', isLongText: true, text: '这条微博只返回了开头片段', user: { idstr: externalUid, screen_name: author }, created_at: new Date().toISOString() };
+    const issue = { type: 'full_text', rootId: pending.idstr, postId: pending.idstr, stage: '微博正文', url: 'https://weibo.com/detail/' + pending.idstr, excerpt: pending.text, attempts: 1, maxAttempts: 3, nextRetryAt: Date.now() + 60000, exhausted: false };
+    runtime.store.updateJob(historyJob.id, { checkpoint: { pageLoaded: true, page: 1, pending: [pending], contentIssue: issue } });
+    await page.reload();
+    await page.getByRole('button', { name: '正在恢复缓存 · 无需操作', exact: true }).click();
+    await page.getByRole('status', { name: '未读完整的内容', exact: true }).waitFor();
+    assert.match(await page.getByRole('status').filter({ hasText: '正在自动恢复，无需操作' }).innerText(), /这条微博只返回了开头片段/);
+    assert.equal(await page.getByRole('button', { name: '重试历史缓存', exact: true }).count(), 0);
+    runtime.store.updateJob(historyJob.id, { status: 'needs_review', checkpoint: { pageLoaded: true, page: 1, pending: [pending], contentIssue: { ...issue, attempts: 3, exhausted: true, nextRetryAt: null } } });
+    await page.reload();
+    await page.locator('button.st-flow-status').click();
+    await page.getByRole('button', { name: '跳过这条，继续缓存', exact: true }).waitFor();
+    assert.equal(await page.getByRole('link', { name: '查看这条微博 ↗', exact: true }).getAttribute('href'), issue.url);
+    assert.equal(await page.getByRole('button', { name: '继续缓存', exact: true }).count(), 0, '不重复提供含义不清的继续按钮');
+    await page.getByRole('button', { name: '跳过这条，继续缓存', exact: true }).click();
+    await page.getByText(/已保留片段和链接，继续缓存其他内容/).waitFor();
+    assert.equal(runtime.store.posts({ ids: [pending.idstr] })[0].complete, 0);
+    assert.equal(runtime.store.job(historyJob.id).status, 'queued');
+  }
   await page.getByRole('button', { name: /^消息中心/ }).click();
   await screen('messages');
   await page.locator('.st-message-row').filter({ hasText: '原创消息：可以搜索验证' }).getByRole('button', { name: '查看', exact: true }).click();
@@ -1326,7 +1347,11 @@ test('业务 Chat：总结、查询、确认监控变更、创建并执行任务
   let releaseFirst; const firstRequest = new Promise(resolve => { releaseFirst = resolve; }); let firstCall = true;
   const model = { available: () => true, selection: () => selection, generate: async options => {
     if (firstCall) { firstCall = false; options.onPhase?.('thinking'); await firstRequest; }
-    const input = JSON.parse(options.messages.findLast(item => item.role === 'user').content[0].text).request;
+    const input = JSON.parse(options.messages.findLast(item => item.role === 'user' && item.content[0].text.startsWith('{')).content[0].text).request;
+    if (input === '触发回答截断测试' || input === '继续刚才未完成的回答，从中断处接着写') {
+      const truncated = input === '触发回答截断测试', text = truncated ? '尚未完成的观点说明。' : '续写已补全。';
+      return { text, calls: [], content: [{ type: 'text', text }], source: { kind: 'model', ...selection }, truncated };
+    }
     if (input === '批量开启两位博主历史缓存') {
       const calls = [uid, '1234567891'].map((id, index) => ({ id: 'batch-' + index, type: 'tool-call', name: 'control_monitor', arguments: JSON.stringify({ uid: id, kind: 'history', enabled: true }) }));
       return { text: '', calls, content: calls, source: { kind: 'model', ...selection } };
@@ -1501,5 +1526,97 @@ test('业务 Chat：总结、查询、确认监控变更、创建并执行任务
   await page.getByRole('button', { name: '撤销删除', exact: true }).click();
   await history.getByRole('button', { name: '总结今天测试博主的观点', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: /^定时任务/ }).count(), 0);
+  await page.getByRole('button', { name: '新建对话', exact: true }).click();
+  await send('触发回答截断测试');
+  await page.getByRole('button', { name: '继续回答', exact: true }).waitFor();
+  assert.match(await page.locator('.st-chat-progress-head').last().innerText(), /回答未完/);
+  assert.doesNotMatch(await page.locator('.st-chat-progress-head').last().innerText(), /执行失败/);
+  await composer.fill('尚未发送的草稿');
+  await page.getByRole('button', { name: '继续回答', exact: true }).click();
+  await page.getByText('续写已补全。', { exact: true }).waitFor();
+  assert.equal(await composer.inputValue(), '尚未发送的草稿', '继续回答不能丢失正在编辑的草稿');
+  assert.deepEqual(errors, []);
+});
+
+
+test('抖音页面：独立登录添加、每天多时间配置、视频与转写开关和资料展示', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'social-trace-douyin-ui-'));
+  writeFileSync(join(directory, 'workspace.json'), JSON.stringify({ directory }));
+  const runtime = createRuntime(directory, { updates: offlineUpdates() });
+  const external = 'MS4w' + 'C'.repeat(40), uid = 'douyin:' + external;
+  let loginCount = 0;
+  runtime.sources.douyin.browser.login = async () => { loginCount++; };
+  runtime.sources.douyin.browser.checkLogin = async () => 'SYNTHETIC_ACCOUNT';
+  runtime.sources.douyin.browser.profile = async () => ({ name: '抖音页面测试博主', avatar: null, total: 3 });
+  const server = createServer((req, res) => {
+    if (assets[req.url]) { res.setHeader('Content-Type', 'application/javascript; charset=utf-8'); return res.end(assets[req.url]); }
+    if (req.url === '/') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); return res.end(shell); }
+    return runtime.handle(req, res);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const browser = await chromium.launch({ headless: true, args: ['--password-store=basic', '--use-mock-keychain'] });
+  t.after(async () => { await browser.close(); server.close(); await runtime.close(); rmSync(directory, { recursive: true, force: true }); });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(10000);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('http://127.0.0.1:' + server.address().port);
+  await page.getByRole('button', { name: '连接与设置', exact: true }).waitFor().catch(async error => { throw new Error(JSON.stringify(errors) + '\n' + (await page.locator('body').innerText()).slice(0, 1200) + '\n' + error.message); });
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click();
+  await page.getByRole('tab', { name: '抖音', exact: true }).click();
+  await page.getByRole('button', { name: '登录抖音', exact: true }).click();
+  await page.getByRole('button', { name: '我已登录，继续', exact: true }).click();
+  assert.equal(loginCount, 1);
+  await page.getByRole('button', { name: '关闭添加博主', exact: true }).click();
+  await page.getByLabel('抖音检查时间 1', { exact: true }).fill('10:00');
+  await page.getByRole('button', { name: '+ 添加检查时间', exact: true }).click();
+  await page.getByLabel('抖音检查时间 2', { exact: true }).fill('20:00');
+  await page.getByRole('switch', { name: '保存视频', exact: true }).check();
+  await page.getByRole('switch', { name: '本地转写', exact: true }).check();
+  await page.getByRole('button', { name: '保存抖音配置', exact: true }).click();
+  await page.getByText('抖音配置已保存', { exact: true }).waitFor();
+  assert.deepEqual(runtime.store.getSetting('douyinConfig').times, ['10:00', '20:00']);
+  assert.equal(runtime.store.getSetting('douyinConfig').saveVideo, true);
+  await page.getByRole('button', { name: '监控流向', exact: true }).click();
+  await page.locator('.st-follow-menu > summary').click();
+  await page.getByRole('button', { name: '+ 添加博主', exact: true }).first().click();
+  await page.getByRole('tab', { name: '抖音', exact: true }).last().click();
+  await page.getByRole('textbox', { name: '抖音博主主页或 UID', exact: true }).fill('https://www.douyin.com/user/' + external);
+  await page.getByRole('button', { name: '添加并读取资料', exact: true }).click();
+  await page.getByRole('button', { name: '从现在开始', exact: true }).waitFor();
+  await page.getByRole('button', { name: '从现在开始', exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('.st-capture-choice'));
+  assert.equal(runtime.store.target(uid).capture_mode, 'from_now');
+  const post = normalizeDouyinPost({ aweme_id: '92000000000000001', create_time: Math.floor(Date.now() / 1000), author: { sec_uid: external, nickname: '抖音页面测试博主' }, desc: '视频说明', video: { duration: 60000 }, chapter_review_status: 2, chapter_abstract: '平台AI归纳内容', chapter_list: [{ timestamp: 30000, desc: '章节一', detail: '章节测试内容' }] }, external);
+  runtime.store.savePost({ ...post, uid, id: 'douyin:' + post.id }, Date.now(), 'updates');
+  runtime.videos.patch('douyin:' + post.id, { transcript: '本地语音识别测试内容', transcript_status: 'done' });
+  await page.getByRole('button', { name: '监控流向', exact: true }).click();
+  await page.getByRole('button', { name: '设置抖音平台', exact: true }).click();
+  await page.getByRole('tab', { name: '内容保存', exact: true }).click();
+  assert.equal(await page.getByRole('switch', { name: '保存视频', exact: true }).isChecked(), true);
+  await page.getByRole('button', { name: '关闭监控设置', exact: true }).click();
+  await page.locator('.st-follow-menu > summary').click();
+  await page.getByRole('button', { name: /抖音页面测试博主/ }).first().click().catch(async error => { throw new Error((await page.locator('body').innerText()).slice(0, 3500) + '\n' + error.message); });
+  assert.ok((await page.locator('.st-identity .st-uid-tag').innerText()).length < 30, '长UID应缩略显示');
+  assert.equal(await page.locator('.st-identity .st-uid-tag').getAttribute('title'), 'UID ' + external);
+  await page.getByRole('tab', { name: '新消息监控', exact: true }).click();
+  assert.equal(await page.getByLabel('抖音检查时间 1', { exact: true }).isEnabled(), true, '跟随平台的博主也应能直接修改时间');
+  await page.getByLabel('抖音检查时间 1', { exact: true }).fill('11:00');
+  await page.getByRole('button', { name: '保存抖音配置', exact: true }).click();
+  await page.getByText('抖音配置已保存', { exact: true }).waitFor();
+  assert.deepEqual(runtime.store.getSetting('douyinConfig:' + uid).times, ['11:00', '20:00']);
+  assert.deepEqual(runtime.store.getSetting('douyinConfig').times, ['10:00', '20:00'], '博主编辑不改变平台默认');
+  await page.getByRole('tab', { name: '内容保存', exact: true }).click();
+  await page.getByRole('switch', { name: '本地转写', exact: true }).uncheck();
+  await page.getByRole('button', { name: '保存抖音配置', exact: true }).click();
+  await page.getByText('抖音配置已保存', { exact: true }).waitFor();
+  assert.deepEqual(runtime.store.getSetting('douyinConfig:' + uid).times, ['11:00', '20:00'], '保存内容选项保留独立时间');
+  await page.getByRole('tab', { name: '留存内容', exact: true }).click();
+  await page.getByText('平台AI归纳内容', { exact: true }).waitFor();
+  await page.getByText('本地文字稿 · 已生成', { exact: true }).click();
+  await page.getByText('本地语音识别测试内容', { exact: true }).waitFor();
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '抖音资料页不能横向溢出');
+    if (process.env.SOCIAL_TRACE_UI_OUTPUT) await page.screenshot({ path: join(process.env.SOCIAL_TRACE_UI_OUTPUT, 'douyin-content-' + width + '.png'), fullPage: true });
+  }
   assert.deepEqual(errors, []);
 });

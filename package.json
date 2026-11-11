@@ -1,7 +1,7 @@
 {
   "name": "dsh-social-trace",
-  "version": "0.1.13",
-  "description": "Social Trace：微博与雪球增量监控、可视化拓扑、历史缓存与本地检索",
+  "version": "0.1.18",
+  "description": "运行在 DeepSeek Harness 上的博主言论追踪与分析 Agent，支持微博、雪球与抖音",
   "type": "module",
   "license": "MIT",
   "author": "chiinsight",
@@ -19,6 +19,7 @@
     "deepseek-harness",
     "weibo",
     "xueqiu",
+    "douyin",
     "archive",
     "monitor"
   ],
@@ -42,7 +43,9 @@
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES"
+    "THIRD_PARTY_NOTICES",
+    "lib/platforms/douyin/transcribe.py",
+    "assets/douyin.ico"
   ],
   "scripts": {
     "start": "node scripts/preview.mjs",
@@ -51,7 +54,9 @@
     "test": "node --test test/*.test.mjs",
     "test:ui": "node --test test/client.ui.mjs",
     "build": "node scripts/build-markdown.mjs",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "pretest": "npm run build",
+    "pretest:ui": "npm run build"
   },
   "icon": "assets/icon.svg",
   "dsh": {

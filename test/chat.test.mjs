@@ -48,7 +48,7 @@ test('监控控制先预览，确认后复用页面业务逻辑；重复确认�
   const run = await h.run('暂停测试博主的新动态监控');
   assert.equal(run.status, 'awaiting_confirmation');
   assert.equal(h.runtime.store.job(job.id).status, 'queued');
-  h.runtime.chat.confirm(run.id);
+  await h.runtime.chat.confirm(run.id);
   assert.equal(h.runtime.store.job(job.id).status, 'paused');
   assert.equal(h.runtime.chat.runs(run.session_id)[0].status, 'completed');
   assert.throws(() => h.runtime.chat.confirm(run.id), /已处理/);
@@ -58,7 +58,7 @@ test('取消变更不写配置，固定频率只修改一个博主的独立策�
   const h = fixture(t, [answer('', [call('set_frequency', { uid, minutes: 5 })]), answer('', [call('set_frequency', { uid, minutes: 7 })])]);
   const cancelled = await h.run('改为5分钟'); h.runtime.chat.cancel(cancelled.id);
   assert.equal(h.runtime.store.getSetting('targetPolicy:' + uid, null), null);
-  const approved = await h.run('改为7分钟'); h.runtime.chat.confirm(approved.id);
+  const approved = await h.run('改为7分钟'); await h.runtime.chat.confirm(approved.id);
   assert.equal(h.runtime.store.monitoringPolicy(h.runtime.store.target(uid)).intervalMs, 420000);
   assert.equal(h.runtime.store.getSetting('schedule:weibo', null), null);
 });
@@ -66,7 +66,7 @@ test('取消变更不写配置，固定频率只修改一个博主的独立策�
 test('从 Chat 添加监控创建真实增量任务，不开启历史、不弹浏览器', async t => {
   const h = fixture(t, [answer('', [call('add_monitor', { platform: 'xueqiu', url: 'https://xueqiu.com/u/8000000000' })])]);
   const run = await h.run('添加这个雪球博主');
-  h.runtime.chat.confirm(run.id);
+  await h.runtime.chat.confirm(run.id);
   const target = h.runtime.store.target('xueqiu:8000000000');
   assert.equal(target.capture_mode, 'from_now'); assert.ok(target.record_from > 0);
   const jobs = h.runtime.store.jobs().filter(job => job.uid === target.uid);
@@ -77,7 +77,7 @@ test('从 Chat 添加监控创建真实增量任务，不开启历史、不弹�
 
 test('创建多时间工作日总结任务，真正到期执行并关联可查看的报告', async t => {
   const h = fixture(t, [answer('', [call('create_summary_task', { name: '每日总结', uids: [uid], times: ['12:00', '18:00'] })]), answer('', [call('search_posts', { uids: [uid] })]), answer('本地没有符合范围的资料。')]);
-  const run = await h.run('创建工作日总结任务'); h.runtime.chat.confirm(run.id);
+  const run = await h.run('创建工作日总结任务'); await h.runtime.chat.confirm(run.id);
   const task = h.runtime.chat.tasks()[0]; assert.equal(task.repeat, 'weekdays');
   assert.deepEqual(task.times, ['12:00', '18:00']);
   h.runtime.store.db.prepare('UPDATE chat_tasks SET next_run_at=? WHERE id=?').run(Date.now() - 10000, task.id);
@@ -92,7 +92,7 @@ test('任务时间按北京时间工作日计算，周五晚错过后到周一�
   assert.equal(nextTaskAt(task, Date.parse('2026-11-06T18:00:00+08:00')), Date.parse('2026-11-09T12:00:00+08:00'));
 });
 
-test('无效来源不显示成功，未知工具不能执行，工具上限有效', async t => {
+test('无效来源不显示成功，未知工具不能执行，重复无进展会停止', async t => {
   const h = fixture(t, [answer('总结 [S999]'), ...Array.from({ length: 6 }, () => answer('', [call('shell', { command: 'not-executed' })]))]);
   assert.equal((await h.run('总结')).status, 'failed');
   const blocked = await h.run('运行任意工具');
@@ -152,11 +152,11 @@ test('模型私有协议数据不进入对话记录或接口，查询状态无�
 test('立即执行已有任务生成真实报告，保持暂停和原定时时间不变', async t => {
   const responses = [answer('', [call('create_summary_task', { name: '测试任务', uids: [uid], times: ['18:00'] })])];
   const h = fixture(t, responses);
-  const created = await h.run('创建任务'); h.runtime.chat.confirm(created.id);
+  const created = await h.run('创建任务'); await h.runtime.chat.confirm(created.id);
   const task = h.runtime.chat.tasks()[0];
   h.runtime.store.db.prepare('UPDATE chat_tasks SET enabled=0 WHERE id=?').run(task.id);
   responses.push(answer('', [call('run_summary_task', { id: task.id })]), answer('没有符合范围的本地资料。'));
-  const preview = await h.run('现在执行这个任务'); h.runtime.chat.confirm(preview.id); await h.runtime.chat.work;
+  const preview = await h.run('现在执行这个任务'); await h.runtime.chat.confirm(preview.id); await h.runtime.chat.work;
   const after = h.runtime.chat.tasks()[0]; assert.equal(after.enabled, false); assert.equal(after.next_run_at, task.next_run_at);
   assert.equal(h.runtime.store.db.prepare('SELECT status FROM chat_runs WHERE id=?').get(after.last_run_id).status, 'completed');
 });
@@ -283,7 +283,7 @@ test('同轮多博主历史缓存全部进入确认，确认前不修改，确�
   assert.equal(preview.status, 'awaiting_confirmation');
   assert.equal(preview.action.actions.length, 2);
   assert.ok(h.runtime.store.jobs().filter(job => job.kind === 'history').every(job => job.status === 'paused'));
-  assert.equal(h.runtime.chat.confirm(preview.id).results.length, 2);
+  assert.equal((await h.runtime.chat.confirm(preview.id)).results.length, 2);
   const finished = h.runtime.chat.runs(preview.session_id)[0];
   assert.equal(finished.status, 'completed');
   assert.match(finished.answer, /第二位博主/);
@@ -311,7 +311,7 @@ test('批量执行中途失败保留实际回执，不执行后续项，也不�
   h.runtime.store.addTarget(other, '第二位博主');
   h.runtime.store.updateJob(h.runtime.store.jobs().find(job => job.uid === other && job.kind === 'history').id, { status: 'complete' });
   const run = await h.run('批量调整');
-  assert.throws(() => h.runtime.chat.confirm(run.id), /尚未执行/);
+  await assert.rejects(h.runtime.chat.confirm(run.id), /尚未执行/);
   const finished = h.runtime.chat.runs(run.session_id)[0];
   assert.equal(finished.status, 'failed'); assert.equal(finished.action, null);
   assert.match(finished.answer, /已执行/); assert.match(finished.answer, /第二位博主/);
@@ -325,7 +325,7 @@ test('已删除会话的旧变更不能确认，恢复后才能执行', async t 
   const run = await h.run('暂停监控'); await h.runtime.chat.deleteSession(run.session_id);
   assert.throws(() => h.runtime.chat.confirm(run.id), /对话已删除/);
   assert.equal(h.runtime.store.jobs().find(job => job.kind === 'updates').status, 'queued');
-  h.runtime.chat.restoreSession(run.session_id); h.runtime.chat.confirm(run.id);
+  h.runtime.chat.restoreSession(run.session_id); await h.runtime.chat.confirm(run.id);
   assert.equal(h.runtime.store.jobs().find(job => job.kind === 'updates').status, 'paused');
 });
 
@@ -357,4 +357,104 @@ test('雪球文章及转发文章向模型保留仅标题链接标记，不假�
   assert.equal(run.sources.find(source => source.id === 'xueqiu:99201').article, true);
   assert.equal(run.sources.find(source => source.id === 'xueqiu:99202').quote.article, true);
   assert.doesNotMatch(JSON.stringify(h.requests), /PRIVATE_ARTICLE_BODY/);
+});
+
+test('Chat 抖音资料区分平台解析和转写，限制上下文且不传下载签名和程序路径', async t => {
+  const { normalizePost: normalizeDouyinPost } = await import('../lib/platforms/douyin/data.js');
+  const external = 'MS4w' + 'D'.repeat(40), douyinUid = 'douyin:' + external;
+  const h = fixture(t, [answer('', [call('search_posts', { uids: [douyinUid], query: '转写观点' })]), answer('这是一份平台归纳与本地识别稿，需核对视频 [S1]')]);
+  h.runtime.store.addTarget(external, '视频测试作者', Date.now() - 86400000, 'douyin', { archiveHistory: false, captureMode: 'from_now' });
+  h.runtime.store.setSetting('douyinConfig', { times: ['20:00'], modelPath: '/SYNTHETIC_PRIVATE_MODEL' });
+  const post = normalizeDouyinPost({ aweme_id: '93000000000000001', create_time: Math.floor(Date.now() / 1000), author: { sec_uid: external, nickname: '视频测试作者' }, desc: '作品说明', video: { duration: 30000, play_addr: { url_list: ['https://v1.douyinvod.com/test?signature=PRIVATE_FIXTURE_SIGNATURE'] } }, chapter_review_status: 2, chapter_abstract: '平台归纳'.repeat(3000), chapter_list: [{ timestamp: 1000, desc: '章节', detail: '平台章节'.repeat(1000) }] }, external);
+  const id = 'douyin:' + post.id;
+  h.runtime.store.savePost({ ...post, id, uid: douyinUid });
+  h.runtime.videos.patch(id, { transcript: '转写观点'.repeat(600), transcript_status: 'done', search_text: '转写观点' });
+  const result = await h.run('总结视频测试作者的转写观点');
+  assert.equal(result.status, 'completed'); assert.equal(result.sources.length, 1);
+  const source = result.sources[0]; assert.equal(source.video.summary.origin, 'platform_ai');
+  assert.equal(source.video.summary.abstract.length, 2000); assert.equal(source.video.transcript.length, 1500);
+  assert.equal(source.video.summary.chapters[0].text.length, 500); assert.equal(source.truncated, true);
+  assert.doesNotMatch(JSON.stringify(h.requests), /PRIVATE_FIXTURE_SIGNATURE|SYNTHETIC_PRIVATE_MODEL|videoURL|storageState/);
+});
+
+test('宿主输出预算由DSH配置，max-tokens正文返回可续写标记，不伪装成失败', async () => {
+  let prepared, streamed;
+  const model = hostModel(key => key === 'agentDefaultModel' ? { currentSelection: () => selection } : {
+    stream() {}, async prepareCall(options) { prepared = options; return { config: { maxTokens: 32768 }, async *stream(options) { streamed = options; yield { type: 'text-delta', index: 0, text: '尚未写完的正文' }; yield { type: 'finish', reason: { kind: 'max-tokens' } }; } }; },
+  });
+  const result = await model.generate({ selection, messages: [], tools: [], signal: new AbortController().signal });
+  assert.equal(Object.hasOwn(prepared, 'maxTokens'), false); assert.equal(streamed.maxTokens, 32768);
+  assert.equal(result.truncated, true); assert.equal(result.text, '尚未写完的正文');
+});
+
+test('较长回答不再受18000字符限制', async t => {
+  const long = '测试内容'.repeat(6000), h = fixture(t, [answer(long)]);
+  const result = await h.run('写一份详细说明'); assert.equal(result.status, 'completed'); assert.equal(result.answer, long);
+});
+
+test('模型截断后自动只读续写，保留前文和来源引用', async t => {
+  const h = fixture(t, [answer('', [call('search_posts', { uids: [uid] })]), { ...answer('已读到的观点 [S1]。后半部分：'), truncated: true }, answer('补全后的结论 [S1]。')]);
+  h.runtime.store.savePost(normalizePost({ idstr: '999001', user: { idstr: uid, screen_name: '测试博主' }, text: '真实观点', created_at: new Date().toISOString() }, uid));
+  const result = await h.run('总结今天的观点');
+  assert.equal(result.status, 'completed'); assert.match(result.answer, /后半部分：补全后的结论/);
+  assert.equal(result.sources.length, 1); assert.deepEqual(h.requests[2].tools, []);
+  assert.match(JSON.stringify(h.requests[2].messages), /不调用工具/);
+});
+
+test('自动续写有界限，仍被截断时保留未完状态，可在同一对话继续', async t => {
+  const h = fixture(t, [{ ...answer('第一段。'), truncated: true }, { ...answer('第二段。'), truncated: true }, { ...answer('第三段。'), truncated: true }, answer('接着补全结尾。')]);
+  const partial = await h.run('详细介绍功能'); assert.equal(partial.status, 'partial'); assert.equal(partial.error, '');
+  assert.equal(partial.answer, '第一段。第二段。第三段。'); assert.equal(h.requests.length, 3);
+  const finished = await h.run('继续刚才未完成的回答', partial.session_id);
+  assert.equal(finished.status, 'completed'); assert.match(JSON.stringify(h.requests[3].messages), /第三段/);
+});
+
+test('被截断的操作请求不会执行或生成错误确认，续写不接受写工具', async t => {
+  const h = fixture(t, [{ ...answer('正在说明。'), truncated: true }, answer('', [call('control_monitor', { uid, kind: 'updates', enabled: false })])]);
+  const result = await h.run('说明监控功能'); assert.equal(result.status, 'failed'); assert.equal(result.action, null);
+  assert.equal(h.runtime.store.jobs().find(job => job.kind === 'updates').status, 'queued');
+  assert.match(result.error, /未执行额外工具/);
+});
+
+test('正常查询超过六轮八工具仍可完成，不按总次数误杀', async t => {
+  const h = fixture(t, [...Array.from({ length: 12 }, (_, offset) => answer('', [call('search_posts', { uids: [uid], offset: offset * 20 })])), answer('已查询指定范围，无完整材料')]);
+  const run = await h.run('逐页查完');
+  assert.equal(run.status, 'completed');
+  assert.equal(run.steps.filter(step => step.kind === 'tool').length, 12);
+});
+
+test('监控范围同一工具读写：预览不生效，确认后回读日期/原创/暂停状态，已有内容保留', async t => {
+  const h = fixture(t, [answer('', [call('set_monitor_scope', { uids: [uid], from: '2026-01-01', to: '2026-01-31', originalOnly: true, historyEnabled: false })])]);
+  const run = await h.run('只缓存一月原创，先不开始');
+  assert.equal(run.status, 'awaiting_confirmation');
+  assert.equal(h.runtime.store.target(uid).history_from, null);
+  const receipt = await h.runtime.chat.confirm(run.id);
+  assert.equal(receipt.result.targets[0].from, '2026-01-01');
+  assert.equal(receipt.result.targets[0].originalOnly, true);
+  assert.equal(receipt.result.targets[0].historyStatus, 'paused');
+});
+
+test('抖音保存选项可经 Chat 确认修改，未提交字段与独立时间配置保留', async t => {
+  const external = 'MS4w' + 'B'.repeat(40), target = 'douyin:' + external;
+  const h = fixture(t, [answer('', [call('set_monitor_scope', { uids: [target], transcribe: true })])]);
+  h.runtime.store.addTarget(external, '视频测试博主', Date.now(), 'douyin', { archiveHistory: false, captureMode: 'from_now' });
+  h.runtime.store.setSetting('douyinConfig:' + target, { times: ['08:30'], saveVideo: false, saveAudio: true });
+  const run = await h.run('给视频博主打开转写');
+  assert.equal(run.status, 'awaiting_confirmation');
+  const receipt = await h.runtime.chat.confirm(run.id), options = receipt.result.targets[0];
+  assert.equal(options.contentOptions.transcribe, true); assert.equal(options.contentOptions.saveVideo, false); assert.equal(options.contentOptions.saveAudio, true);
+  assert.deepEqual(options.dailySchedule.times, ['08:30']);
+});
+
+test('会话来源编号跨过短历史窗口仍稳定，不把旧 S1 分给另一条消息', async t => {
+  const h = fixture(t, [answer('', [call('search_posts', { uids: [uid] })]), answer('原观点 [S1]'), ...Array.from({ length: 5 }, () => answer('你好')), answer('', [call('search_posts', { uids: [uid] })]), answer('新旧观点 [S1] [S2]')]);
+  const raw = idstr => ({ idstr, user: { idstr: uid }, text: '观点' + idstr, created_at: new Date().toISOString() });
+  h.runtime.store.savePost(normalizePost(raw('99001'), uid));
+  const first = await h.run('总结');
+  for (let i = 0; i < 5; i++) await h.run('你好', first.session_id);
+  h.runtime.store.savePost(normalizePost(raw('99002'), uid));
+  const last = await h.run('再总结', first.session_id);
+  assert.equal(last.status, 'completed');
+  assert.equal(last.sources.find(source => source.id === '99001').sourceId, 'S1');
+  assert.equal(last.sources.find(source => source.id === '99002').sourceId, 'S2');
 });

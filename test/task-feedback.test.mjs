@@ -6,18 +6,18 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 const sandbox = { window: { __ModuleLoader__: { load: registration => registration.factory(() => React) } } };
-const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace('    function AddAuthorDialog', '    globalThis.feedback = { monitorStatus, taskProblem, FrequencyFields, NodeSettings };\n    function AddAuthorDialog');
+const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace('    function AddAuthorDialog', '    globalThis.feedback = { monitorStatus, taskProblem, FrequencyFields, NodeSettings, ContentProblem };\n    function AddAuthorDialog');
 vm.runInNewContext(code, sandbox);
-const { monitorStatus, taskProblem, FrequencyFields, NodeSettings } = sandbox.feedback;
+const { monitorStatus, taskProblem, FrequencyFields, NodeSettings, ContentProblem } = sandbox.feedback;
 
 test('历史长文错误指明博主和缓存任务，不误报登录失效', () => {
   const job = { id: 'history', uid: 'one', kind: 'history', status: 'needs_review', message: '长文接口未返回全文，保留断点并暂停' };
   const state = { enabled: true, account: { status: 'ready', cooldown_until: 0 }, targets: [{ uid: 'one', platform: 'weibo', name: '测试博主' }], jobs: [job, { uid: 'one', kind: 'updates', status: 'queued' }] };
   const status = monitorStatus(state);
-  assert.equal(status.label, '1 位博主的历史缓存已暂停');
+  assert.equal(status.label, '测试博主：有微博未读完整');
   assert.equal(status.kind, 'partial');
-  assert.match(status.reason, /测试博主.*长内容/);
-  assert.match(taskProblem(job), /已保存内容保留/);
+  assert.match(status.reason, /测试博主.*全文/);
+  assert.match(taskProblem(job), /已有内容保留/);
   assert.doesNotMatch(status.label, /登录|任务需检查/);
 });
 
@@ -62,4 +62,14 @@ test('频率设置能区分接口返回的最新时间、读取失败和正文�
   assert.match(html, /返回 20 条/);
   assert.match(html, /动态列表读取失败/);
   assert.match(html, /正文补全失败/);
+});
+
+test('重试中明确说明时间且无重试按钮，耗尽后指向原微博和保留片段跳过', () => {
+  const job = { id: 'history', uid: 'one', kind: 'history', status: 'queued', contentIssue: { stage: '微博正文', postId: '100000000001', url: 'https://weibo.com/detail/100000000001', excerpt: '未读完整内容的开头', attempts: 1, maxAttempts: 3, nextRetryAt: Date.now() + 60000, exhausted: false } };
+  const html = renderToStaticMarkup(React.createElement(ContentProblem, { job, name: '测试博主', act() {} }));
+  assert.match(html, /无需操作/); assert.match(html, /自动重试/); assert.match(html, /未读完整内容的开头/);
+  assert.doesNotMatch(html, /<button/);
+  const failed = renderToStaticMarkup(React.createElement(ContentProblem, { job: { ...job, status: 'needs_review', contentIssue: { ...job.contentIssue, attempts: 3, exhausted: true } }, name: '测试博主', act() {} }));
+  assert.match(failed, /https:\/\/weibo.com\/detail\/100000000001/); assert.match(failed, /跳过这条，继续缓存/); assert.match(failed, /不标记为全文/);
+  assert.doesNotMatch(failed, /重试历史缓存/);
 });
