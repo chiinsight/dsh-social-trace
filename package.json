@@ -1,6 +1,6 @@
 {
   "name": "dsh-social-trace",
-  "version": "0.1.18",
+  "version": "0.1.20",
   "description": "运行在 DeepSeek Harness 上的博主言论追踪与分析 Agent，支持微博、雪球与抖音",
   "type": "module",
   "license": "MIT",

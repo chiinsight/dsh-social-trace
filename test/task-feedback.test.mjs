@@ -6,9 +6,9 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 const sandbox = { window: { __ModuleLoader__: { load: registration => registration.factory(() => React) } } };
-const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace('    function AddAuthorDialog', '    globalThis.feedback = { monitorStatus, taskProblem, FrequencyFields, NodeSettings, ContentProblem };\n    function AddAuthorDialog');
+const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace('    function AddAuthorDialog', '    globalThis.feedback = { monitorStatus, taskProblem, FrequencyFields, NodeSettings, ContentProblem, CheckHealthNotice };\n    function AddAuthorDialog');
 vm.runInNewContext(code, sandbox);
-const { monitorStatus, taskProblem, FrequencyFields, NodeSettings, ContentProblem } = sandbox.feedback;
+const { monitorStatus, taskProblem, FrequencyFields, NodeSettings, ContentProblem, CheckHealthNotice } = sandbox.feedback;
 
 test('历史长文错误指明博主和缓存任务，不误报登录失效', () => {
   const job = { id: 'history', uid: 'one', kind: 'history', status: 'needs_review', message: '长文接口未返回全文，保留断点并暂停' };
@@ -56,7 +56,8 @@ test('频率设置能区分接口返回的最新时间、读取失败和正文�
       { at: 300000, page: 1, stage: 'complete', status: 'network' },
     ], history: {} }] };
   const html = renderToStaticMarkup(React.createElement(NodeSettings, { context: { scope: 'target', uid: 'one', platform: 'weibo' }, state, embedded: true }));
-  assert.match(html, /未按设定频率及时检查/);
+  assert.match(html, /测试/);
+  assert.match(html, /新动态检查有延迟/);
   assert.match(html, /最近检查记录/);
   assert.match(html, /返回的最新发布时间/);
   assert.match(html, /返回 20 条/);
@@ -72,4 +73,24 @@ test('重试中明确说明时间且无重试按钮，耗尽后指向原微博�
   const failed = renderToStaticMarkup(React.createElement(ContentProblem, { job: { ...job, status: 'needs_review', contentIssue: { ...job.contentIssue, attempts: 3, exhausted: true } }, name: '测试博主', act() {} }));
   assert.match(failed, /https:\/\/weibo.com\/detail\/100000000001/); assert.match(failed, /跳过这条，继续缓存/); assert.match(failed, /不标记为全文/);
   assert.doesNotMatch(failed, /重试历史缓存/);
+});
+
+
+test('平台延迟提示列出具体博主、UID、完成时间与延迟，不猜原因；入口指向该博主', () => {
+  const state = { targets: [{ uid: 'one', name: '甲博主', platform: 'weibo' }, { uid: 'two', name: '乙博主', platform: 'weibo' }],
+    jobs: [{ id: 'j1', uid: 'one', kind: 'updates' }, { id: 'j2', uid: 'two', kind: 'updates' }], activeJobIds: ['j1'], progress: [] };
+  const source = { id: 'weibo', health: { delayed: [{ uid: 'one', lastCheckedAt: 1794445200000, lateMs: 125000 }, { uid: 'two', lastCheckedAt: null, lateMs: 8000 }] } };
+  let opened;
+  const element = CheckHealthNotice({ state, source, openSettings: value => { opened = value; } });
+  const html = renderToStaticMarkup(element);
+  assert.match(html, /甲博主/); assert.match(html, /乙博主/); assert.match(html, /UID one/);
+  assert.match(html, /2026/); assert.match(html, /3 分钟/); assert.match(html, /8 秒/);
+  assert.match(html, /正在检查/); assert.match(html, /原因尚未确认/); assert.match(html, /尚无完成记录/);
+  assert.doesNotMatch(html, /登录正常不代表|1 位博主未/);
+  const buttons = [];
+  const visit = node => { if (!node || typeof node !== 'object') return; if (node.type === 'button') buttons.push(node); React.Children.forEach(node.props?.children, visit); };
+  visit(element); buttons[1].props.onClick();
+  assert.equal(opened.uid, 'two'); assert.equal(opened.platform, 'weibo'); assert.equal(opened.tab, 'frequency');
+  const filtered = renderToStaticMarkup(React.createElement(CheckHealthNotice, { state, source, uid: 'two' }));
+  assert.doesNotMatch(filtered, /甲博主/); assert.match(filtered, /乙博主/);
 });

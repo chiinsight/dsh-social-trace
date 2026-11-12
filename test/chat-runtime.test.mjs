@@ -18,7 +18,7 @@ function host(t) {
       events('session/event', {}, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '原生回答' }] }, usage: { inputTokens: 10 } } });
       events('session/event', {}, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
     }); }, whenIdle: () => work };
-  const make = async (options, list) => { list.push(options); options.setup(scope, agent); return { agent, dispose: async () => { disposed++; } }; };
+  const make = async (options, list) => { list.push(options); await options.setup(scope, agent); return { agent, dispose: async () => { disposed++; } }; };
   const services = { compaction: {}, agents: { create: options => make(options, created), resume: options => make(options, resumed) } };
   const runtime = hostAgentRuntime(key => services[key], { available: () => true, selection: () => selection });
   t.after(() => runtime.close());
@@ -46,7 +46,7 @@ test('重启使用明确持久化标记恢复同一宿主会话，失败不静�
 
 test('无 Agent 或压缩服务明确不可用，不退回简化循环', () => {
   const h = hostAgentRuntime(() => null, { available: () => true });
-  assert.equal(h.available(), false); assert.throws(() => h.selection(), /未退回/);
+  assert.equal(h.available(), false); assert.throws(() => h.selection(), /未就绪/);
 });
 
 test('新分页和新结果超过八次可以继续，同参数不同结果不算空转', () => {
@@ -74,4 +74,28 @@ test('写工具只返回确认预览，下步关闭工具；同批工具仍能�
   });
   await h.runtime.run(options({ onTool: async () => { calls++; return { pendingConfirmation: true }; } }));
   assert.equal(calls, 2);
+});
+
+
+test('桌面宿主压缩服务在 Agent 预设内：挂载后检查，不要求全局服务', async t => {
+  let mounted = false, restricted = false, recorded;
+  const agent = { session: { append: (name, data) => { recorded = { name, data }; } }, model: { select() {} }, followup() {}, whenIdle: async () => {}, cancel() {} };
+  const scope = { tools: { restrict() { assert.equal(mounted, true); restricted = true; }, register() {} }, systemPrompt: { section() {} }, on() {} };
+  const services = {
+    agentPresets: { presetForSession: () => null, mount: async received => { assert.equal(received, scope); mounted = true; return { id: 'standard' }; }, serviceFor: (received, name) => received === agent && mounted && name === 'compaction' ? {} : undefined },
+    agents: { create: async options => { await options.setup(scope, agent); return { agent, dispose: async () => {} }; }, resume() {} },
+  };
+  const runtime = hostAgentRuntime(key => services[key], { selection: () => selection, available: () => true });
+  t.after(() => runtime.close());
+  assert.equal(runtime.available(), true);
+  assert.equal(runtime.info().error, undefined);
+  await runtime.run(options({ tools: [], catalog: [] }));
+  assert.equal(restricted, true);
+  assert.deepEqual(recorded, { name: 'agent-preset/selected', data: { agentPreset: 'standard' } });
+});
+
+test('服务不可用提供真实原因，而非误报默认模型未配置', () => {
+  const runtime = hostAgentRuntime(() => null, { available: () => true });
+  assert.match(runtime.info().error, /Agent 服务未就绪/);
+  assert.equal(runtime.info().available, false);
 });
