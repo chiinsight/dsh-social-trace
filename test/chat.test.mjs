@@ -63,6 +63,24 @@ test('取消变更不写配置，固定频率只修改一个博主的独立策�
   assert.equal(h.runtime.store.getSetting('schedule:weibo', null), null);
 });
 
+test('聊天可只修改微博分时规则的其他时间，并保留时段与独立博主配置', async t => {
+  const h = fixture(t, [answer('', [call('set_frequency', { platform: 'weibo', fallbackMinutes: 180 })])]);
+  const secondUid = '9876543210';
+  h.runtime.store.addTarget(secondUid, '独立频率博主', Date.now() - 86400000, 'weibo', { archiveHistory: false, captureMode: 'from_now' });
+  h.runtime.store.setSetting('schedule:weibo', { enabled: true, fallbackMinutes: 60, windows: [{ start: '09:00', end: '15:00', intervalMinutes: 1, repeat: 'weekdays' }] });
+  h.runtime.store.setSetting('targetPolicy:' + secondUid, { intervalMs: 300000, schedule: { enabled: false, fallbackMinutes: 5, windows: [] } });
+  const run = await h.run('把微博工作日 09:00–15:00 每分钟检查保留，其他时间改成每 180 分钟');
+  assert.equal(run.status, 'awaiting_confirmation');
+  assert.match(run.action.label, /其他时间改为每 180 分钟检查/);
+  assert.match(run.action.label, /工作日 09:00–15:00 每 1 分钟/);
+  assert.match(run.action.label, /独立设置的博主不变/);
+  assert.equal(h.runtime.store.getSetting('schedule:weibo').fallbackMinutes, 60, '确认前不得写入');
+  await h.runtime.chat.confirm(run.id);
+  assert.deepEqual(h.runtime.store.getSetting('schedule:weibo'), { enabled: true, fallbackMinutes: 180, windows: [{ start: '09:00', end: '15:00', intervalMinutes: 1, repeat: 'weekdays' }] });
+  assert.equal(h.runtime.store.monitoringPolicy(h.runtime.store.target(uid)).schedule.fallbackMinutes, 180);
+  assert.equal(h.runtime.store.monitoringPolicy(h.runtime.store.target(secondUid)).intervalMs, 300000);
+});
+
 test('从 Chat 添加监控创建真实增量任务，不开启历史、不弹浏览器', async t => {
   const h = fixture(t, [answer('', [call('add_monitor', { platform: 'xueqiu', url: 'https://xueqiu.com/u/8000000000' })])]);
   const run = await h.run('添加这个雪球博主');
