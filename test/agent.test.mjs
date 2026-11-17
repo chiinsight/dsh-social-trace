@@ -333,3 +333,36 @@ test('IM 原文明确区分发布、监控发现、首次保存、发起推送�
   assert.equal(row.published_at, published); assert.equal(row.detected_at, detected); assert.equal(row.saved_at, saved);
   assert.ok(row.sent_at >= saved);
 });
+
+test('同一批多条动态一次 tick 排空，并按发布时间而不是入库顺序推送', async t => {
+  const h = await setup(t);
+  await h.runtime.agent.configure(h.config);
+  const now = Date.now();
+  h.save('10000000000000101', 'updates', '1234567890', now - 1000);
+  h.save('10000000000000102', 'updates', '1234567890', now - 3000);
+  h.save('10000000000000103', 'updates', '1234567890', now - 2000);
+  assert.equal(h.runtime.agent.status().deliveries.filter(d => d.status === 'queued').length, 3);
+  await h.runtime.agent.tick();
+  assert.equal(h.sent.length, 3, '一次 tick 排空整批，不再每条等 5 秒');
+  assert.match(h.sent[0][2], /10000000000000102/);
+  assert.match(h.sent[1][2], /10000000000000103/);
+  assert.match(h.sent[2][2], /10000000000000101/);
+  assert.ok(h.runtime.agent.status().deliveries.every(d => d.status === 'sent'));
+});
+
+test('长文节选立即推送并明确标注，全文补全后不重复推送', async t => {
+  const h = await setup(t);
+  await h.runtime.agent.configure(h.config);
+  const raw = { idstr: '10000000000000111', isLongText: true, text: '已读到的片段', user: { idstr: '1234567890', screen_name: '测试博主' }, created_at: new Date().toISOString() };
+  h.runtime.store.savePost(normalizePost(raw, '1234567890'), Date.now(), 'updates');
+  assert.equal(h.runtime.agent.status().deliveries.length, 1, '不等全文，节选入库即入队');
+  await h.runtime.agent.tick();
+  assert.match(h.sent[0][2], /长文节选推送：全文仍在后台补全/);
+  assert.match(h.sent[0][2], /已读到的片段/);
+  assert.match(h.sent[0][2], /原文：https:\/\/weibo.com/);
+  h.runtime.store.savePost(normalizePost({ ...raw, longTextContent: '补全后的完整正文' }, '1234567890'), Date.now(), 'updates');
+  assert.equal(h.runtime.store.posts()[0].complete, 1);
+  assert.equal(h.runtime.agent.status().deliveries.length, 1, '全文补全归档不产生第二次推送');
+  await h.runtime.agent.tick();
+  assert.equal(h.sent.length, 1);
+});

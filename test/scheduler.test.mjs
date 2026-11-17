@@ -271,3 +271,60 @@ test('首次监控与后续检查都按整点：22:25 添加等到23:00，读取
   assert.equal(scans, 2, '错过多个整点只合并补查一次');
   assert.equal(h.store.job(h.update.id).next_run_at, clock('2026-11-07T05:00:00'));
 });
+
+test('突发跟进：新动态触发 1/2/5 分钟递进复查，持续活跃维持 5 分钟，安静后回落原频率', async t => {
+  let stage = 0;
+  const pages = [
+    [raw('1', at('13:59:00'))],
+    [raw('2', at('14:14:30')), raw('1', at('13:59:00'))],
+    [raw('3', at('14:15:30')), raw('2', at('14:14:30'))],
+    [raw('4', at('14:17:30')), raw('3', at('14:15:30'))],
+    [raw('5', at('14:22:30')), raw('4', at('14:17:30'))],
+    [raw('5', at('14:22:30'))],
+  ];
+  const h = fixture(t, async () => ({ items: pages[stage], end: false }));
+  h.store.updateJob(h.update.id, { checkpoint: { initialized: true, lastScanAt: at('14:00:00'), boundaryIds: ['1'] }, next_run_at: at('14:00:00') });
+  const runCycle = async () => { for (let i = 0; i < 4; i++) await h.worker.tick(); return h.store.job(h.update.id); };
+
+  let job = await runCycle();
+  assert.equal(job.next_run_at, at('14:15:00'), '基线轮没有新内容，不触发跟进');
+  assert.equal(job.checkpoint.burstStage, undefined);
+
+  stage = 1; h.setTime(at('14:15:00')); job = await runCycle();
+  assert.equal(job.next_run_at, at('14:16:00'), '发现新动态，1 分钟后跟进而不是等 15 分钟');
+  assert.equal(job.checkpoint.burstStage, 1);
+  assert.match(job.message, /1 分钟后跟进检查/);
+
+  stage = 2; h.setTime(at('14:16:00')); job = await runCycle();
+  assert.equal(job.next_run_at, at('14:18:00'), '持续活跃，递进到 2 分钟');
+  assert.equal(job.checkpoint.burstStage, 2);
+
+  stage = 3; h.setTime(at('14:18:00')); job = await runCycle();
+  assert.equal(job.next_run_at, at('14:23:00'), '递进到 5 分钟');
+  assert.equal(job.checkpoint.burstStage, 3);
+
+  stage = 4; h.setTime(at('14:23:00')); job = await runCycle();
+  assert.equal(job.next_run_at, at('14:28:00'), '仍然活跃则维持 5 分钟跟进');
+  assert.equal(job.checkpoint.burstStage, 3);
+
+  stage = 5; h.setTime(at('14:28:00')); job = await runCycle();
+  assert.equal(job.next_run_at, at('14:30:00'), '没有新内容，回落原频率刻度');
+  assert.equal(job.checkpoint.burstStage, undefined);
+  assert.equal(job.checkpoint.burstAt, undefined);
+});
+
+test('突发跟进不被配置重算覆盖，也不推迟比跟进更近的自有频率', async t => {
+  let fresh = true;
+  const h = fixture(t, async () => ({ items: fresh ? [raw('2', at('14:14:30')), raw('1', at('13:59:00'))] : [raw('1', at('13:59:00'))], end: false }));
+  h.store.updateJob(h.update.id, { checkpoint: { initialized: true, lastScanAt: at('14:00:00'), boundaryIds: ['1'] }, next_run_at: at('14:15:00') });
+  h.setTime(at('14:15:00'));
+  for (let i = 0; i < 4; i++) await h.worker.tick();
+  assert.equal(h.store.job(h.update.id).next_run_at, at('14:16:00'));
+  h.worker.rescheduleUpdates();
+  assert.equal(h.store.job(h.update.id).next_run_at, at('14:16:00'), '频率重算保留跟进时间');
+  fresh = false;
+  h.store.setSetting('targetPolicy:' + uid, { intervalMs: 60000, schedule: null });
+  h.store.updateJob(h.update.id, { checkpoint: { ...h.store.job(h.update.id).checkpoint, burstStage: 0, burstAt: 0 } });
+  h.worker.rescheduleUpdates();
+  assert.ok(h.store.job(h.update.id).next_run_at <= at('14:16:00'), '自有频率更快时不被跟进推迟');
+});

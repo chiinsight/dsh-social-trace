@@ -143,7 +143,6 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   assert.equal(await page.locator('.st').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(255, 255, 255)');
   await page.waitForFunction(() => document.querySelector('.st-weibo-logo')?.naturalWidth > 0);
   assert.match(await page.locator('.st-weibo-logo').getAttribute('src'), /assets\/weibo.ico/);
-  await page.waitForFunction(() => document.querySelector('.st-development-platform img')?.naturalWidth === 32);
   assert.match(await page.locator('.st-flow-status.blocked').innerText(), /连接待恢复/);
   assert.equal(await page.getByRole('button', { name: '恢复连接', exact: true }).count(), 1);
   assert.equal(await page.locator('.st-source-group').count(), 4);
@@ -161,7 +160,8 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
   assert.equal(await page.getByRole('button', { name: '查看监控任务', exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: '打开插件设置', exact: true }).count(), 0);
   const writesBeforeSnow = writes.length;
-  await page.getByRole('button', { name: '连接雪球平台', exact: true }).click();
+  await page.getByRole('button', { name: '连接与设置', exact: true }).click();
+  await page.getByRole('tab', { name: '雪球', exact: true }).click();
   await page.getByRole('region', { name: '雪球账号连接', exact: true }).waitFor();
   assert.equal(writes.length, writesBeforeSnow);
   await page.getByRole('button', { name: '监控流向', exact: true }).click();
@@ -1238,7 +1238,7 @@ for (const platform of ['weibo', 'xueqiu']) test(`${platform} 全流程与布局
     await page.reload();
     await page.locator('button.st-flow-status').click();
     await page.getByRole('button', { name: '跳过这条，继续缓存', exact: true }).waitFor();
-    assert.equal(await page.getByRole('link', { name: '查看这条微博 ↗', exact: true }).getAttribute('href'), issue.url);
+    assert.equal(await page.getByRole('link', { name: '查看原文 ↗', exact: true }).getAttribute('href'), issue.url);
     assert.equal(await page.getByRole('button', { name: '继续缓存', exact: true }).count(), 0, '不重复提供含义不清的继续按钮');
     await page.getByRole('button', { name: '跳过这条，继续缓存', exact: true }).click();
     await page.getByText(/已保留片段和链接，继续缓存其他内容/).waitFor();

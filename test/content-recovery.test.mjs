@@ -7,6 +7,7 @@ import { Store } from '../lib/store.js';
 import { Worker } from '../lib/worker.js';
 import { CaptureError } from '../lib/capture-error.js';
 import { normalizePost, WeiboBrowser } from '../lib/platforms/weibo/index.js';
+import { normalizePost as xueqiuNormalize } from '../lib/platforms/xueqiu/index.js';
 import { createBusiness } from '../lib/business.js';
 
 const uid = '1234567890', postId = '100000000001';
@@ -89,4 +90,72 @@ test('自动重试耗尽后再次恢复全文，会消除同一条故障的未�
   assert.equal(h.store.unreadNotices().attention, 1);
   ready = true; h.store.updateJob(h.history.id, { status: 'queued', next_run_at: 0 }); await h.worker.tick();
   assert.equal(h.store.unreadNotices().attention, 0); assert.equal(h.issue(), undefined);
+});
+
+test('更新任务长文全文暂缺时先保存节选并入推送队列，全文恢复后补全不重复推送', async t => {
+  let ready = false;
+  const h = fixture(t, post => { if (!ready) throw Object.assign(new CaptureError('content', '全文暂缺'), { postId }); return { ...post, longTextContent: '恢复后的完整正文' }; });
+  h.store.updateJob(h.history.id, { status: 'paused' });
+  h.store.db.prepare('UPDATE targets SET record_from=? WHERE uid=?').run(Date.parse('2026-11-01T00:00:00+08:00'), uid);
+  h.store.setSetting('agentDelivery', { enabled: true, botId: 'bot', targetId: 'target', uids: [] });
+  h.store.updateJob(h.updates.id, { status: 'queued', checkpoint: { page: 1, pageLoaded: true, pending: [raw] }, next_run_at: 0 });
+  await h.worker.tick();
+  assert.equal(h.store.posts()[0].complete, 0, '全文暂缺也先落库节选');
+  assert.equal(h.store.posts()[0].text, '已读到的正文片段');
+  assert.equal(h.store.db.prepare("SELECT COUNT(*) AS n FROM social_deliveries WHERE status='queued'").get().n, 1, '节选立即入推送队列');
+  assert.ok(h.store.notices().find(notice => notice.kind === 'update' && /长文节选/.test(notice.message)));
+  const job = h.store.job(h.updates.id);
+  assert.equal(job.checkpoint.contentIssue.attempts, 1);
+  assert.equal(job.saved, 1, '节选入库计入任务留存数');
+  assert.equal(job.next_run_at, Date.parse('2026-11-11T10:00:00+08:00') + 60000, '全文重试节奏不变');
+  ready = true; h.advance(60000); await h.worker.tick();
+  assert.equal(h.store.posts()[0].complete, 1);
+  assert.equal(h.store.posts()[0].text, '恢复后的完整正文');
+  assert.equal(h.store.job(h.updates.id).saved, 1, '全文补全不重复计数');
+  assert.equal(h.store.db.prepare('SELECT COUNT(*) AS n FROM social_deliveries').get().n, 1, '全文补全归档不重复推送');
+});
+
+const xuid = '1234567890', xpostId = '200000000001';
+const xraw = { id: xpostId, user_id: Number(xuid), user: { id: Number(xuid), screen_name: '雪球测试博主' }, created_at: Date.parse('2026-11-04T12:00:00+08:00'), text: '已读到的正文片段', truncated: true };
+function xueqiuFixture(t, complete) {
+  const directory = mkdtempSync(join(tmpdir(), 'social-trace-xueqiu-recovery-')), store = new Store(directory);
+  let now = Date.parse('2026-11-11T10:00:00+08:00'), calls = 0;
+  store.addTarget(xuid, '雪球测试博主', now, 'xueqiu'); store.setAccount({ status: 'ready' }, 'xueqiu');
+  const history = store.jobs().find(job => job.kind === 'history'), updates = store.jobs().find(job => job.kind === 'updates');
+  store.updateJob(updates.id, { status: 'paused' });
+  store.updateJob(history.id, { checkpoint: { page: 1, pageLoaded: true, pending: [xraw] }, next_run_at: 0 });
+  const adapter = { id: 'xueqiu', normalizePost: xueqiuNormalize, needsRequest: () => true, complete: async post => { calls++; if (complete) return complete(post); throw Object.assign(new CaptureError('content', '雪球详情没有确认完整正文，保留断点并暂停'), { postId: xpostId }); } };
+  const worker = new Worker(store, adapter, { now: () => now });
+  t.after(async () => { await worker.stop(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  return { store, worker, history, updates, calls: () => calls, advance: ms => { now += ms; }, issue: () => store.job(history.id).checkpoint.contentIssue };
+}
+
+test('雪球全文暂缺先存节选并按同一阶梯自动重试，耗尽后可跳过继续', async t => {
+  const h = xueqiuFixture(t); await h.worker.tick();
+  assert.equal(h.calls(), 1); assert.equal(h.issue().attempts, 1); assert.equal(h.store.job(h.history.id).status, 'queued');
+  assert.equal(h.issue().url, 'https://xueqiu.com/' + xuid + '/' + xpostId);
+  assert.equal(h.store.posts()[0].complete, 0, '节选先落库'); assert.equal(h.store.posts()[0].text, '已读到的正文片段');
+  for (const delay of [60000, 300000, 1800000]) { h.advance(delay); await h.worker.tick(); }
+  assert.equal(h.calls(), 4); assert.equal(h.issue().exhausted, true);
+  assert.equal(h.store.job(h.history.id).status, 'needs_review'); assert.equal(h.store.account('xueqiu').status, 'ready');
+  const business = createBusiness(() => h.store, { xueqiu: { worker: h.worker, browser: {} } }, () => {});
+  business.skipContent(h.history.id, xpostId);
+  assert.equal(h.store.job(h.history.id).status, 'queued'); assert.equal(h.store.job(h.history.id).checkpoint.pending.length, 0);
+  assert.equal(h.store.posts()[0].complete, 0, '跳过不伪装全文');
+});
+
+test('雪球旧版全文中断自动进入重试，其他类型错误不被开启', async t => {
+  const h = xueqiuFixture(t);
+  h.store.updateJob(h.history.id, { status: 'needs_review', message: '雪球详情没有确认完整正文，保留断点并暂停' });
+  h.worker.recoverContentFailures(); assert.equal(h.store.job(h.history.id).status, 'queued'); assert.equal(h.issue().attempts, 1);
+  h.store.updateJob(h.history.id, { status: 'needs_review', message: '雪球时间线或分页字段变化，已暂停', checkpoint: { pending: [xraw] } });
+  h.worker.recoverContentFailures(); assert.equal(h.store.job(h.history.id).status, 'needs_review'); assert.equal(h.issue(), undefined);
+});
+
+test('雪球全文恢复后自动补全归档，并清除重试状态', async t => {
+  let ready = false;
+  const h = xueqiuFixture(t, post => { if (!ready) throw Object.assign(new CaptureError('content', '雪球详情没有确认完整正文'), { postId: xpostId }); return { ...post, text: '恢复后的完整正文', truncated: false }; });
+  await h.worker.tick(); ready = true; h.advance(60000); await h.worker.tick();
+  assert.equal(h.store.posts()[0].complete, 1); assert.equal(h.store.posts()[0].text, '恢复后的完整正文');
+  assert.equal(h.issue(), undefined); assert.equal(h.store.notices().filter(item => item.kind === 'attention').length, 0);
 });

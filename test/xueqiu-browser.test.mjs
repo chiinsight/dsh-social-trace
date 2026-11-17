@@ -79,7 +79,10 @@ test('雪球图片和头像只接受独立 CDN，纯图片可留存，长文摘�
   assert.equal(normalizePost(raw, '12345').complete, true);
   const adapter = new XueqiuBrowser('/unused', async () => {});
   adapter.request = async () => ({ ...raw, text: '', description: '摘要...', truncated: false });
-  await assert.rejects(adapter.complete({ ...raw, text: '', truncated: true }), error => error.kind === 'schema');
+  await assert.rejects(adapter.complete({ ...raw, text: '', truncated: true }), error => error.kind === 'content' && error.postId === '123');
+  const imageOnly = { id: 124, user_id: 12345, created_at: 1000, text: '', image_info_list: [{ url: 'https://xqimg.imedao.com/a.png' }], truncated: false };
+  assert.equal(normalizePost(imageOnly, '12345').text, '分享图片');
+  assert.equal(normalizePost(imageOnly, '12345').complete, true, '纯图片动态没有更多正文可取，不应反复请求详情');
 });
 
 
