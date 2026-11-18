@@ -6,19 +6,30 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 const sandbox = { window: { __ModuleLoader__: { load: registration => registration.factory(() => React) } } };
-const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace('    function AddAuthorDialog', '    globalThis.feedback = { monitorStatus, taskProblem, FrequencyFields, NodeSettings, ContentProblem, CheckHealthNotice };\n    function AddAuthorDialog');
+const code = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8').replace('    function AddAuthorDialog', '    globalThis.feedback = { monitorStatus, taskProblem, streamStatus, FrequencyFields, NodeSettings, ContentProblem, CheckHealthNotice };\n    function AddAuthorDialog');
 vm.runInNewContext(code, sandbox);
-const { monitorStatus, taskProblem, FrequencyFields, NodeSettings, ContentProblem, CheckHealthNotice } = sandbox.feedback;
+const { monitorStatus, taskProblem, streamStatus, FrequencyFields, NodeSettings, ContentProblem, CheckHealthNotice } = sandbox.feedback;
 
 test('历史长文错误指明博主和缓存任务，不误报登录失效', () => {
   const job = { id: 'history', uid: 'one', kind: 'history', status: 'needs_review', message: '长文接口未返回全文，保留断点并暂停' };
   const state = { enabled: true, account: { status: 'ready', cooldown_until: 0 }, targets: [{ uid: 'one', platform: 'weibo', name: '测试博主' }], jobs: [job, { uid: 'one', kind: 'updates', status: 'queued' }] };
   const status = monitorStatus(state);
-  assert.equal(status.label, '测试博主：有微博未读完整');
+  assert.equal(status.label, '测试博主：有内容未读完整');
   assert.equal(status.kind, 'partial');
   assert.match(status.reason, /测试博主.*全文/);
   assert.match(taskProblem(job), /已有内容保留/);
   assert.doesNotMatch(status.label, /登录|任务需检查/);
+  const xueqiu = monitorStatus({ ...state, targets: [{ uid: 'one', platform: 'xueqiu', name: '测试博主' }] }, 'xueqiu');
+  assert.equal(xueqiu.label, '测试博主：有内容未读完整');
+});
+
+test('历史缓存未开启与已暂停按是否请求过区分，不依赖任务文案', () => {
+  const target = { uid: 'one', platform: 'weibo', name: '测试博主', capture_mode: 'from_now', enabled: true };
+  const job = { id: 'h', uid: 'one', kind: 'history', status: 'paused', message: '已手动暂停，断点保留' };
+  const base = { enabled: true, account: { status: 'ready', cooldown_until: 0 }, targets: [target], jobs: [job] };
+  assert.equal(streamStatus({ ...base, progress: [{ uid: 'one', history: { started: false } }] }, target, 'history'), '未开启');
+  assert.equal(streamStatus({ ...base, progress: [{ uid: 'one', history: { started: true } }] }, target, 'history'), '已暂停');
+  assert.equal(streamStatus(base, target, 'history'), '未开启');
 });
 
 test('频率主文案只说明多久检查，时钟对齐留在辅助说明', () => {

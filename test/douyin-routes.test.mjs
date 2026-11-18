@@ -27,6 +27,10 @@ test('抖音真实HTTP：添加、资料、确认、定时独立配置、媒体�
   assert.equal(runtime.store.target(uid).name, '抖音测试博主');
   assert.equal((await post('/targets/start', { uid, mode: 'from_now' })).status, 200);
   assert.equal(runtime.store.target(uid).capture_mode, 'from_now');
+  const rejected = await post('/history/range', { uid, originalOnly: true });
+  assert.equal(rejected.status, 400, '抖音不区分原创与转发，应明确拒绝而不是静默忽略');
+  assert.match((await rejected.json()).error, /抖音作品不区分原创与转发/);
+  assert.equal(runtime.store.jobs().find(job => job.uid === uid && job.kind === 'history').status, 'paused');
   assert.equal((await post('/douyin/config', { config: { times: ['12:00', '20:00'], saveVideo: true } })).status, 200);
   assert.equal((await post('/douyin/config', { uid, inherit: false, config: { times: ['19:00'], platformAI: true } })).status, 200);
   assert.equal((await post('/douyin/config', { config: { times: ['09:00'] } })).status, 200);

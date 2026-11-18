@@ -44,6 +44,11 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
     storage: { workspaceDirectory: '/tmp/Social Trace default', documentsDirectory: '/tmp/Social Trace default/documents', changing: false, syncing: false, error: '' },
   };
   state.progress = [{ uid: '1011', saved: 431, lastSavedAt: 1000, lastCheckedAt: null, nextCheckAt: null, history: { status: 'paused', started: false, pages: 0, oldestAt: null, reportedTotal: 1000, estimatedRemaining: 569 } }];
+  const markHistoryStarted = uid => {
+    const entry = state.progress.find(item => item.uid === uid);
+    if (entry) entry.history = { ...entry.history, started: true };
+    else state.progress.push({ uid, saved: 0, lastSavedAt: null, lastCheckedAt: null, nextCheckAt: null, history: { status: 'queued', started: true, pages: 0, oldestAt: null, reportedTotal: null, estimatedRemaining: null } });
+  };
   state.update = { currentVersion: '0.1.0', latestVersion: '0.2.0', updateAvailable: true, checkedAt: new Date().toISOString(), canApply: true, phase: 'idle', manualCommand: 'dsh plugin --profile desktop add dsh-social-trace@latest' };
   state.agent = { transportAvailable: true, config: { enabled: true, botId: 'demo-bot', targetId: 'demo-target', uids: [] }, deliveries: [{ id: 'demo-delivery', author: '示例博主甲', status: 'sent', created_at: Date.now() }] };
   state.platforms[0].schedule = { enabled: true, fallbackMinutes: 60, windows: [{ start: '08:00', end: '15:00', intervalMinutes: 1 }] };
@@ -84,6 +89,7 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
         const target = state.targets.find(item => item.uid === parsed.uid);
         target.capture_mode = parsed.mode;
         state.jobs.filter(job => job.uid === parsed.uid).forEach(job => job.status = job.kind === 'updates' || parsed.mode === 'history' ? 'queued' : 'paused');
+        if (parsed.mode === 'history') markHistoryStarted(parsed.uid);
       }
       if (req.url.endsWith('/notices/read')) {
         state.notices.forEach(item => { if ((!parsed.id || parsed.id === item.id) && (!parsed.uid || parsed.uid === item.uid) && (!parsed.kind || parsed.kind === item.kind)) item.read_at = Date.now(); });
@@ -93,12 +99,14 @@ test('插件流向图：多平台汇总、折叠连线、博主档案联动与�
       if (req.url.includes('/jobs/')) {
         const job = state.jobs.find(job => req.url.includes('/' + job.id + '/'));
         if (job) job.status = req.url.endsWith('/pause') ? 'paused' : 'queued';
+        if (job?.kind === 'history' && req.url.endsWith('/resume')) markHistoryStarted(job.uid);
       }
       if (req.url.endsWith('/history/pause')) state.jobs.filter(job => job.kind === 'history' && (!parsed.uid || job.uid === parsed.uid)).forEach(job => job.status = 'paused');
       if (req.url.endsWith('/targets/policy')) { state.targets.find(item => item.uid === parsed.uid).policy = parsed.inherit ? null : { intervalMs: parsed.intervalMinutes * 60000, schedule: parsed.schedule }; }
       if (req.url.endsWith('/history/range')) {
         const job = state.jobs.find(job => job.uid === parsed.uid && job.kind === 'history');
         if (job) job.status = 'queued';
+        if (parsed.uid) markHistoryStarted(parsed.uid);
         const target = state.targets.find(item => item.uid === parsed.uid);
         if (target) { target.historyOriginalOnly = parsed.originalOnly; target.history_from = parsed.from ? Date.parse(parsed.from + 'T00:00:00+08:00') : null; target.history_to = parsed.to ? Date.parse(parsed.to + 'T23:59:59.999+08:00') : null; }
       }
@@ -921,9 +929,14 @@ test('新用户实际界面：登录、添加、只读资料、选择从现在�
   await page.getByRole('button', { name: '返回博主列表', exact: true }).click();
   const listHistory = page.getByRole('switch', { name: '演示博主历史缓存开关', exact: true });
   await listHistory.click();
-  await page.waitForFunction(() => document.querySelector('.st-author-table [aria-label="演示博主历史缓存开关"]')?.getAttribute('aria-checked') === 'true');
+  // 首次开启历史缓存与流向图开关一致：先引导选择范围，不直接开始全量缓存。
+  const readerHistory = page.getByRole('region', { name: '节点监控设置', exact: true });
+  assert.equal(runtime.store.jobs().find(job => job.kind === 'history').status, 'paused');
+  await readerHistory.getByRole('button', { name: '开始缓存', exact: true }).click();
+  await readerHistory.getByRole('button', { name: '暂停缓存', exact: true }).waitFor();
   assert.equal(runtime.store.jobs().find(job => job.kind === 'history').status, 'queued');
   assert.equal(runtime.store.getSetting('targetPolicy:9000000000').intervalMs, 420000);
+  await page.getByRole('button', { name: '返回博主列表', exact: true }).click();
   await listHistory.click();
   await page.waitForFunction(() => document.querySelector('.st-author-table [aria-label="演示博主历史缓存开关"]')?.getAttribute('aria-checked') === 'false');
   assert.equal(runtime.store.jobs().find(job => job.kind === 'history').status, 'paused');

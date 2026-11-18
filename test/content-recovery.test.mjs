@@ -7,6 +7,7 @@ import { Store } from '../lib/store.js';
 import { Worker } from '../lib/worker.js';
 import { CaptureError } from '../lib/capture-error.js';
 import { normalizePost, WeiboBrowser } from '../lib/platforms/weibo/index.js';
+import { feedLooksTruncated } from '../lib/platforms/weibo/recovery.js';
 import { normalizePost as xueqiuNormalize } from '../lib/platforms/xueqiu/index.js';
 import { createBusiness } from '../lib/business.js';
 
@@ -106,10 +107,39 @@ test('重试尚未耗尽时暂停再开启，保留剩余重试阶梯', async t 
 
 test('微博长文缺失携带具体微博ID，认证验证错误不被误认为正文重试', async t => {
   const h = fixture(t), browser = new WeiboBrowser(h.directory, async () => {});
+  const truncated = { ...raw, text: '已读到的正文片段...<a href="/detail/1">全文</a>' };
   browser.request = async () => ({});
-  await assert.rejects(browser.complete(raw), error => error.kind === 'content' && error.postId === postId);
+  await assert.rejects(browser.complete(truncated), error => error.kind === 'content' && error.postId === postId);
   browser.request = async () => { throw new CaptureError('verification', '需要页面验证'); };
-  await assert.rejects(browser.complete(raw), error => error.kind === 'verification');
+  await assert.rejects(browser.complete(truncated), error => error.kind === 'verification');
+});
+
+test('微博误标长文且全文接口返回空时，无截断标记的已读文本即全文', async t => {
+  const h = fixture(t), browser = new WeiboBrowser(h.directory, async () => {});
+  browser.request = async () => ({});
+  const done = await browser.complete({ ...raw, text: '完整的一句话[doge]' });
+  const post = normalizePost(done, uid);
+  assert.equal(post.complete, true);
+  assert.equal(post.text, '完整的一句话[doge]');
+  assert.equal(feedLooksTruncated({ text: '完整的一句话[doge] ​​​' }), false);
+  assert.equal(feedLooksTruncated({ text: '已读到的正文片段...<a href="/detail/1">全文</a>' }), true);
+  assert.equal(feedLooksTruncated({ text: '被截断的正文…' }), true);
+});
+
+test('启动时自动恢复误标长文停摆的任务，真正截断的仍等待处理', async t => {
+  const h = fixture(t);
+  await h.worker.tick(); for (const delay of [60000, 300000, 1800000]) { h.advance(delay); await h.worker.tick(); }
+  assert.equal(h.store.job(h.history.id).status, 'needs_review');
+  const checkpoint = h.store.job(h.history.id).checkpoint;
+  h.store.updateJob(h.history.id, { checkpoint: { ...checkpoint, pending: [{ ...raw, text: '完整的一句话[doge]' }] } });
+  h.worker.recoverContentFailures(true);
+  assert.equal(h.store.job(h.history.id).status, 'queued');
+  assert.equal(h.issue(), undefined);
+  assert.equal(h.store.unreadNotices().attention, 0);
+  h.store.updateJob(h.history.id, { status: 'needs_review', checkpoint: { ...h.store.job(h.history.id).checkpoint,
+    contentIssue: { type: 'full_text', postId, rootId: postId }, pending: [{ ...raw, text: '被截断的正文...全文' }] } });
+  h.worker.recoverContentFailures(true);
+  assert.equal(h.store.job(h.history.id).status, 'needs_review');
 });
 
 test('恢复旧长文问题只清除对应提醒，不影响其他账号故障', async t => {

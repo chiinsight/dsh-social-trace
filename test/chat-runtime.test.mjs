@@ -13,7 +13,7 @@ function host(t) {
     followup(message) { work = Promise.resolve().then(async () => {
       count++;
       events('agent/assistant-stream', { frame: { type: 'start', step: count } });
-      await script?.(message, definitions, count);
+      await script?.(message, definitions, count, events);
       events('agent/assistant-stream', { frame: { type: 'chunk', chunk: { type: 'text-delta', text: '原生回答' } } });
       events('session/event', {}, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '原生回答' }] }, usage: { inputTokens: 10 } } });
       events('session/event', {}, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
@@ -76,6 +76,20 @@ test('写工具只返回确认预览，下步关闭工具；同批工具仍能�
   assert.equal(calls, 2);
 });
 
+
+test('新一轮模型输出开始强制清空上一轮草稿，思考阶段不残留旧开头', async t => {
+  const h = host(t); const drafts = [];
+  h.script(async (_message, definitions, _count, events) => {
+    events('agent/assistant-stream', { frame: { type: 'chunk', chunk: { type: 'text-delta', text: '我先读取原文' } } });
+    await definitions.get(tool.name).tool.execute({}, { signal: new AbortController().signal });
+    events('agent/assistant-stream', { frame: { type: 'start', step: 2 } });
+    events('agent/assistant-stream', { frame: { type: 'chunk', chunk: { type: 'reasoning-delta', text: '思考' } } });
+    assert.deepEqual(drafts.at(-1), { text: '', force: true });
+  });
+  const result = await h.runtime.run(options({ onText: (text, force) => drafts.push({ text, force }) }));
+  assert.ok(drafts.some(entry => entry.text === '我先读取原文'));
+  assert.equal(result.text, '原生回答');
+});
 
 test('桌面宿主压缩服务在 Agent 预设内：挂载后检查，不要求全局服务', async t => {
   let mounted = false, restricted = false, recorded;

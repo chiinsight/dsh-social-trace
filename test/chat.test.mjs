@@ -476,3 +476,25 @@ test('会话来源编号跨过短历史窗口仍稳定，不把旧 S1 分给另�
   assert.equal(last.sources.find(source => source.id === '99001').sourceId, 'S1');
   assert.equal(last.sources.find(source => source.id === '99002').sourceId, 'S2');
 });
+
+test('宿主流式新回合开始立即清空旧草稿，不受 250ms 节流吞掉', async t => {
+  const h = fixture(t, []);
+  const drafts = [];
+  const patch = h.runtime.chat.patch.bind(h.runtime.chat);
+  h.runtime.chat.patch = (id, value) => { if ('answer' in value) drafts.push(value.answer); return patch(id, value); };
+  h.runtime.chat.model = { available: () => true, selection: () => selection, run: async options => {
+    options.onModel('start');
+    options.onText('我先读取原文', false);
+    options.onModel('end', { inputTokens: 1 });
+    options.onModel('start');
+    options.onText('', true);
+    options.onPhase('thinking');
+    options.onModel('end', { inputTokens: 2 });
+    return { text: '最终结论', truncated: false };
+  } };
+  const run = await h.run('总结');
+  assert.equal(run.status, 'completed');
+  assert.equal(run.answer, '最终结论');
+  assert.ok(drafts.indexOf('我先读取原文') >= 0);
+  assert.ok(drafts.indexOf('') > drafts.indexOf('我先读取原文'));
+});
