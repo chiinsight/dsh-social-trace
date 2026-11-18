@@ -142,22 +142,25 @@ test('旧配置升级不重复发授权提醒，新增目标单独提醒；测�
   assert.equal(h.runtime.agent.status().destinations.find(item => item.targetId === 'target-one').state, 'accepted');
 });
 
-test('补查与上次待发内容区别提醒，重启说明待发数量，不重发结果未知的记录', async t => {
+test('补查与上次待发内容合并为汇总推送，重启不逐条刷屏', async t => {
   const h = await setup(t);
   await h.runtime.agent.configure(h.config);
   h.save('10000000000000081');
   const queued = h.runtime.agent.status().deliveries[0];
   h.runtime.store.db.prepare('UPDATE social_deliveries SET created_at=? WHERE id=?').run(Date.now() - 60000, queued.id);
   h.runtime.agent.start();
-  assert.match(h.runtime.store.notices().find(n => /恢复推送/.test(n.message)).message, /1 条动态尚未发送/);
+  assert.match(h.runtime.store.notices().find(n => /恢复推送/.test(n.message)).message, /1 条动态已合并/);
+  assert.equal(h.runtime.store.db.prepare('SELECT status,error FROM social_deliveries WHERE id=?').get(queued.id).status, 'cancelled');
   await h.runtime.agent.tick();
-  assert.match(h.sent[0][2], /^恢复待发通知/);
+  assert.equal(h.sent.length, 1);
+  assert.match(h.sent[0][2], /^恢复汇总：上次运行已保存 1 条动态/);
+  assert.match(h.sent[0][2], /测试博主 1 条/);
   h.save('10000000000000082', 'catchup');
   await h.runtime.agent.tick();
-  assert.match(h.sent[1][2], /^离线补查通知/);
-  assert.match(h.sent[1][2], /博主发布：[\s\S]*监控发现：[\s\S]*首次保存：/);
+  assert.equal(h.sent.length, 1, '离线补查不再逐条推送');
+  assert.equal(h.runtime.agent.status().deliveries.filter(d => d.post_id === '10000000000000082').length, 0);
   await h.runtime.agent.tick();
-  assert.equal(h.sent.length, 2);
+  assert.equal(h.sent.length, 1);
 });
 
 test('dsh-im 通用失败直指对应插件，连续失败只提醒一次，投递记录逐条保留', async t => {

@@ -135,3 +135,19 @@ for (const platform of ['weibo', 'xueqiu']) test(`${platform} 普通检查保留
   assert.ok(h.store.hasPost(platform === 'weibo' ? '101' : 'xueqiu:101'));
   assert.equal(h.requests.length, 1);
 });
+
+test('离线补查只排队一条汇总推送，不逐条刷屏', async t => {
+  const h = fixture(t, 'weibo', (page, { raw }) => ({ items: page === 1 ? [raw(5, 179), raw(900, 170)] : page === 2 ? [raw(4, 150), raw(3, 120)] : page === 3 ? [raw(2, 80)] : [raw(99, 58)], end: false }));
+  h.save(h.raw(900, 170));
+  h.store.setSetting('agentDelivery', { enabled: true, botId: 'bot-one', targetId: 'target-one', uids: [] });
+  await h.restart();
+  await h.finish();
+  const rows = h.store.db.prepare('SELECT * FROM social_deliveries').all();
+  assert.equal(rows.filter(row => row.message === '').length, 0, '补查不产生逐条推送');
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].message, /离线补查补存 4 条动态/);
+  assert.match(rows[0].message, /并非刚刚发布，未逐条推送/);
+  assert.match(rows[0].message, /其余 1 条见插件留存内容/);
+  assert.equal(rows[0].bot_id, 'bot-one');
+  assert.equal(rows[0].status, 'queued');
+});

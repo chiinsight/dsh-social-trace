@@ -66,6 +66,44 @@ test('跳过只保留片段和链接，不伪装全文；过期点击不能跳�
   assert.throws(() => business.skipContent(h.history.id, postId), /变化/);
 });
 
+test('暂停后重新开启：耗尽的断点重获重试阶梯，提醒清除且任务立即到期', async t => {
+  const h = fixture(t); await h.worker.tick();
+  for (const delay of [60000, 300000, 1800000]) { h.advance(delay); await h.worker.tick(); }
+  assert.equal(h.store.job(h.history.id).status, 'needs_review');
+  const noticeId = h.issue().noticeId;
+  const business = createBusiness(() => h.store, { weibo: { worker: h.worker, browser: {} } }, () => {});
+  business.job(h.history.id, 'pause');
+  assert.equal(h.store.job(h.history.id).status, 'paused'); assert.equal(h.issue().exhausted, true);
+  business.job(h.history.id, 'resume', true);
+  const job = h.store.job(h.history.id);
+  assert.equal(job.status, 'queued'); assert.equal(job.checkpoint.contentIssue, undefined);
+  assert.equal(job.checkpoint.retryAt, 0); assert.equal(job.next_run_at, 0);
+  assert.ok(h.store.notices().find(notice => notice.id === noticeId).read_at);
+  await h.worker.tick(); assert.equal(h.calls(), 5); assert.equal(h.issue().attempts, 1);
+});
+
+test('设置页恢复缓存同样重置耗尽断点，保留待读内容并立即执行', async t => {
+  const h = fixture(t); await h.worker.tick();
+  for (const delay of [60000, 300000, 1800000]) { h.advance(delay); await h.worker.tick(); }
+  h.store.updateJob(h.history.id, { status: 'paused' });
+  const business = createBusiness(() => h.store, { weibo: { worker: h.worker, browser: {} } }, () => {});
+  await business.scope({ uids: [uid], historyEnabled: true });
+  const job = h.store.job(h.history.id);
+  assert.equal(job.status, 'queued'); assert.equal(job.checkpoint.contentIssue, undefined);
+  assert.equal(job.checkpoint.pending.length, 1); assert.equal(job.next_run_at, 0);
+  await h.worker.tick(); assert.equal(h.calls(), 5); assert.equal(h.issue().attempts, 1);
+});
+
+test('重试尚未耗尽时暂停再开启，保留剩余重试阶梯', async t => {
+  const h = fixture(t); await h.worker.tick();
+  const business = createBusiness(() => h.store, { weibo: { worker: h.worker, browser: {} } }, () => {});
+  business.job(h.history.id, 'pause');
+  const issue = h.issue();
+  business.job(h.history.id, 'resume', true);
+  assert.equal(h.store.job(h.history.id).status, 'queued');
+  assert.equal(h.issue().attempts, issue.attempts); assert.equal(h.issue().nextRetryAt, issue.nextRetryAt);
+});
+
 test('微博长文缺失携带具体微博ID，认证验证错误不被误认为正文重试', async t => {
   const h = fixture(t), browser = new WeiboBrowser(h.directory, async () => {});
   browser.request = async () => ({});
